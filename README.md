@@ -7,10 +7,10 @@ without ever modifying, copying, or re-signing Claude itself.
 Your existing Claude stays the default and is never touched.
 
 ```sh
-new-claude "Claude Work"
+new-claude "Claude MyCompany"
 ```
 
-That builds `/Applications/Claude Work.app`, a small launcher that opens the
+That builds `/Applications/Claude MyCompany.app`, a small launcher that opens the
 real Claude pointed at its own data directory. Run it again with a different
 name for a third, fourth, etc.
 
@@ -61,7 +61,7 @@ directory isn't on your `PATH`, the installer prints the one line to add to
 You can also just run the scripts directly without installing:
 
 ```sh
-./bin/new-claude.sh "Claude Work"
+./bin/new-claude.sh "Claude MyCompany"
 ```
 
 ---
@@ -71,19 +71,19 @@ You can also just run the scripts directly without installing:
 Create an instance launcher:
 
 ```sh
-new-claude "Claude Work"
+new-claude "Claude MyCompany"
 ```
 
 Custom data folder name (default is the display name with spaces → hyphens):
 
 ```sh
-new-claude "Claude Work" --dir "Work-Data"
+new-claude "Claude MyCompany" --dir "MyCompany-Data"
 ```
 
 Install to a different apps folder:
 
 ```sh
-new-claude "Claude Work" --apps ~/Applications
+new-claude "Claude MyCompany" --apps ~/Applications
 ```
 
 List the launchers you've created:
@@ -95,13 +95,13 @@ new-claude --list
 Remove a launcher (keeps its data by default):
 
 ```sh
-remove-claude "Claude Work"
+remove-claude "Claude MyCompany"
 ```
 
 Remove a launcher **and** wipe its data folder:
 
 ```sh
-remove-claude "Claude Work" --purge
+remove-claude "Claude MyCompany" --purge
 ```
 
 Re-running `new-claude` with the same name safely rebuilds that launcher.
