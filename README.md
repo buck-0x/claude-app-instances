@@ -126,6 +126,40 @@ After that first login, all instances stay signed in and run side by side.
 
 ---
 
+## ChatGPT instances
+
+The same trick works for OpenAI's **ChatGPT desktop app** — it is a
+Chromium-based build, so it honors `--user-data-dir` just like Claude:
+
+```sh
+new-chatgpt "ChatGPT MyCompany"
+```
+
+All the same flags apply (`--dir`, `--apps`, `--list`), and removal mirrors
+`remove-claude`:
+
+```sh
+remove-chatgpt "ChatGPT MyCompany"           # keep data
+remove-chatgpt "ChatGPT MyCompany" --purge   # wipe data too
+```
+
+Differences from Claude worth knowing:
+
+- **Login is simpler.** ChatGPT signs in inside its own window and stores the
+  session in that instance's data folder — no magic-link routing dance. Just
+  open the new instance and sign in.
+- **`codex://` links.** The app registers a `codex://` URL scheme (and can
+  act as an http/https handler). macOS routes such links to whichever
+  instance registered the scheme most recently — same caveat as Claude's
+  `claude://` links, but it only affects "open in app" links, not login.
+- **Full profile isolation.** Each instance is a separate Chromium profile:
+  its own login, history, and settings.
+
+Requires ChatGPT.app installed at `/Applications/ChatGPT.app`
+(from https://chatgpt.com/download).
+
+---
+
 ## Notes
 
 - **Both windows show as "Claude" in Cmd+Tab.** They launch the same real
@@ -145,6 +179,8 @@ After that first login, all instances stay signed in and run side by side.
 - macOS (tested on 15.5, Apple Silicon)
 - Claude desktop app installed at `/Applications/Claude.app`
   (from https://claude.ai/download)
+- For ChatGPT instances: ChatGPT desktop app installed at
+  `/Applications/ChatGPT.app` (from https://chatgpt.com/download)
 
 ---
 
