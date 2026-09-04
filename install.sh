@@ -13,14 +13,19 @@ BIN_DST="$HOME/.local/bin"
 
 mkdir -p "$BIN_DST"
 
-chmod +x "$BIN_SRC/new-claude.sh" "$BIN_SRC/remove-claude.sh"
+chmod +x "$BIN_SRC/new-claude.sh" "$BIN_SRC/remove-claude.sh" \
+         "$BIN_SRC/new-chatgpt.sh" "$BIN_SRC/remove-chatgpt.sh"
 
-ln -sf "$BIN_SRC/new-claude.sh"    "$BIN_DST/new-claude"
-ln -sf "$BIN_SRC/remove-claude.sh" "$BIN_DST/remove-claude"
+ln -sf "$BIN_SRC/new-claude.sh"     "$BIN_DST/new-claude"
+ln -sf "$BIN_SRC/remove-claude.sh"  "$BIN_DST/remove-claude"
+ln -sf "$BIN_SRC/new-chatgpt.sh"    "$BIN_DST/new-chatgpt"
+ln -sf "$BIN_SRC/remove-chatgpt.sh" "$BIN_DST/remove-chatgpt"
 
 echo "Linked:"
-echo "   $BIN_DST/new-claude    -> $BIN_SRC/new-claude.sh"
-echo "   $BIN_DST/remove-claude -> $BIN_SRC/remove-claude.sh"
+echo "   $BIN_DST/new-claude     -> $BIN_SRC/new-claude.sh"
+echo "   $BIN_DST/remove-claude  -> $BIN_SRC/remove-claude.sh"
+echo "   $BIN_DST/new-chatgpt    -> $BIN_SRC/new-chatgpt.sh"
+echo "   $BIN_DST/remove-chatgpt -> $BIN_SRC/remove-chatgpt.sh"
 echo ""
 
 case ":$PATH:" in
