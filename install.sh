@@ -31,7 +31,8 @@ echo ""
 case ":$PATH:" in
   *":$BIN_DST:"*)
     echo "$BIN_DST is already on your PATH. You're ready:"
-    echo "   new-claude \"Claude Fulcra\"" ;;
+    echo "   new-claude \"Claude MyCompany\""
+    echo "   new-chatgpt \"ChatGPT MyCompany\"" ;;
   *)
     echo "Add $BIN_DST to your PATH by adding this line to ~/.zshrc:"
     echo ""

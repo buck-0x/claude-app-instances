@@ -160,7 +160,7 @@ Requires ChatGPT.app installed at `/Applications/ChatGPT.app`
 
 ---
 
-## Notes
+## Notes (Claude instances)
 
 - **Both windows show as "Claude" in Cmd+Tab.** They launch the same real
   binary, but they're genuinely separate instances with separate data.
