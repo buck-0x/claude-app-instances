@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
     --dir)  DATA_DIR_NAME="$2"; shift 2 ;;
     --apps) APPS_DIR="${2/#\~/$HOME}"; shift 2 ;;
     -h|--help)
-      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*)     echo "Unknown option: $1" >&2; exit 1 ;;
     *)      if [ -z "$DISPLAY_NAME" ]; then DISPLAY_NAME="$1"; fi; shift ;;
@@ -45,7 +45,7 @@ done
 if [ "$DO_LIST" -eq 1 ]; then
   echo "Claude instance launchers found:"
   found=0
-  for plist in "$APPS_DIR"/*.app/Contents/Info.plist; do
+  for plist in "$APPS_DIR"/*.app/Contents/Info.plist(N); do
     [ -f "$plist" ] || continue
     id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null || true)
     case "$id" in
