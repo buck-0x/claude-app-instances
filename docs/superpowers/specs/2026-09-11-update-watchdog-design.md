@@ -34,9 +34,13 @@ A manual `new-claude --reopen-all` fallback command is also included.
 
 1. **Single-watchdog lock**: an atomic symlink lock (`ln -s $$`) per instance under
    `~/Library/Logs/claude-instances/`. If a live watchdog already holds it, the new
-   launcher focuses Claude and exits. Stale locks (dead pid) are reclaimed.
+   launcher exits. Stale locks (dead pid) are reclaimed. No path in the launcher may
+   risk spawning a duplicate instance; "focus the window" helpers were dropped for
+   this reason (verified in practice: Claude does not reliably hand off a second
+   same-data-dir process via a single-instance lock, and `open -a` can spawn an
+   argless instance).
 2. **Adopt or launch**: if an instance with our exact `--user-data-dir` is already
-   running, adopt it (focus Claude, start babysitting). Otherwise launch it with
+   running, adopt it (start babysitting). Otherwise launch it with
    `open -n -a Claude.app --args --user-data-dir=<dir>` and record Claude.app's
    `CFBundleVersion`.
 3. **Babysit by polling** (`ps` for the main Claude binary plus our exact data-dir

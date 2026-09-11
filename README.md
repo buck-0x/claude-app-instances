@@ -150,8 +150,10 @@ Details worth knowing:
 - Watchdog logs live in `~/Library/Logs/claude-instances/<Name>.log`.
 - Quitting an instance at the exact moment an update installs looks like an
   update quit, so it may reopen once; quit it again and it stays quit.
-- Launching an instance's launcher while the instance already runs simply
-  focuses it (and adopts it under watchdog protection if none was active).
+- Launching an instance's launcher while the instance already runs never opens
+  a second copy: it adopts the instance under watchdog protection (or defers to
+  the watchdog that already has it). It won't raise the window; click the
+  window itself for that.
 - `new-claude --reopen-all` reopens any instance that isn't running; use it
   after upgrading launchers, or any time a collapse already happened.
 - Watchdogs end at logout; launchers reopened by macOS "resume windows" at

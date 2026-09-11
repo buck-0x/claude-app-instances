@@ -103,8 +103,8 @@ echo "Test 2: second launcher run defers to the live watchdog"
 WD2=$!
 for i in {1..20}; do kill -0 $WD2 2>/dev/null || break; sleep 0.5; done
 if ! kill -0 $WD2 2>/dev/null; then ok "duplicate launcher exits quickly"; else bad "duplicate launcher exits quickly"; kill $WD2 2>/dev/null; fi
-# The focus hand-off spawns a transient second process that exits on its own;
-# wait for it to settle before counting.
+# Nothing in the duplicate-launcher path may spawn another instance; allow a
+# settle window anyway so a regression shows as a stable extra process.
 COUNT=""
 for i in {1..20}; do
   COUNT="$(stub_pids | wc -l | tr -d ' ')"
