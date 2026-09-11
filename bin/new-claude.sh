@@ -269,13 +269,10 @@ instance_running() {
     END { exit f ? 0 : 1 }'
 }
 
-# Focus the running instance. Spawning with the same --user-data-dir relies on
-# Electron's single-instance lock: the new process hands off to the running
-# instance (which raises its window) and exits. A plain `open -a` is NOT safe
-# here: it can launch a stray instance with no data-dir argument.
-focus_claude() {
-  open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR" 2>/dev/null || true
-}
+# NOTE: no "focus the running window" helper on purpose. `open -a` can launch
+# a stray argless instance, and spawning with the same --user-data-dir proved
+# to leave a second full instance running (Claude does not reliably hand off
+# via a single-instance lock). Nothing here may risk spawning a duplicate.
 
 launch_instance() {
   last_ver=$(bundle_version)
@@ -300,8 +297,8 @@ launch_and_verify() {
 if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   oldpid=$(readlink "$LOCK" 2>/dev/null || true)
   if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
-    # A live watchdog already owns this instance; just surface Claude.
-    focus_claude
+    # A live watchdog already owns this instance; nothing to do.
+    log "another watchdog (pid $oldpid) owns this instance; exiting"
     exit 0
   fi
   rm -f "$LOCK"
@@ -314,7 +311,6 @@ trap 'exit 0' INT TERM
 if instance_running; then
   last_ver=$(bundle_version)
   log "adopting already-running instance ($last_ver)"
-  focus_claude
 else
   if ! launch_and_verify; then
     log "instance failed to start; giving up"
