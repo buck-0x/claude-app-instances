@@ -92,6 +92,12 @@ List the launchers you've created:
 new-claude --list
 ```
 
+Reopen every instance that isn't currently running (e.g. after an update):
+
+```sh
+new-claude --reopen-all
+```
+
 Remove a launcher (keeps its data by default):
 
 ```sh
@@ -123,6 +129,33 @@ After that first login, all instances stay signed in and run side by side.
 > **Security:** a magic link is a one-time login secret. Anyone with the full
 > URL can sign into that account. Never paste it into a chat, ticket, or
 > message. If one is exposed, let it expire and request a fresh one.
+
+---
+
+## Surviving auto-updates
+
+All instances run the same `/Applications/Claude.app`, and Claude's auto-updater
+quietly quits each running instance so it can swap that bundle. The relaunch
+doesn't reliably carry `--user-data-dir` for extra instances, so without help
+they collapse down to one after every update.
+
+The launcher handles this: it stays resident as a tiny watchdog (no Dock icon)
+after starting its instance. If the instance disappears **and** Claude's bundle
+version changed, that was an update; the watchdog reopens the instance with its
+data dir. If the version didn't change, you quit it yourself; the watchdog
+stands down. It reopens at most once per new version, so it can never thrash.
+
+Details worth knowing:
+
+- Watchdog logs live in `~/Library/Logs/claude-instances/<Name>.log`.
+- Quitting an instance at the exact moment an update installs looks like an
+  update quit, so it may reopen once; quit it again and it stays quit.
+- Launching an instance's launcher while the instance already runs simply
+  focuses it (and adopts it under watchdog protection if none was active).
+- `new-claude --reopen-all` reopens any instance that isn't running; use it
+  after upgrading launchers, or any time a collapse already happened.
+- Watchdogs end at logout; launchers reopened by macOS "resume windows" at
+  login restart them automatically.
 
 ---
 
@@ -164,8 +197,9 @@ Requires ChatGPT.app installed at `/Applications/ChatGPT.app`
 
 - **Both windows show as "Claude" in Cmd+Tab.** They launch the same real
   binary, but they're genuinely separate instances with separate data.
-- **The launcher is just a starter.** Once it opens a Claude window you can quit
-  the launcher; the Claude window keeps running.
+- **The launcher stays resident as a watchdog.** It has no Dock icon and just
+  babysits its instance (see "Surviving auto-updates"). Killing the launcher
+  process leaves the Claude window running, only unprotected.
 - **Icons:** the launcher borrows Claude's icon if a loose `.icns` exists in its
   Resources. If this build keeps its icon in an asset catalog, the launcher gets
   a generic icon — harmless. Set a custom one via Finder → Get Info if you like.

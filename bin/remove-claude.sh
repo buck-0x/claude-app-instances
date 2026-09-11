@@ -47,11 +47,30 @@ case "$id" in
     exit 1 ;;
 esac
 
-# Find the data dir the launcher points at (so --purge targets the right folder).
-DATA_DIR=$(sed -n 's/.*--user-data-dir="\([^"]*\)".*/\1/p' "$APP_PATH/Contents/MacOS/launcher" 2>/dev/null)
+# Find the data dir the launcher points at (so --purge targets the right
+# folder). Watchdog launchers carry a DATA_DIR= line; old one-shot launchers
+# only have it inline in the open command.
+LAUNCHER_SCRIPT="$APP_PATH/Contents/MacOS/launcher"
+DATA_DIR=$(sed -n 's/^DATA_DIR="\(.*\)"$/\1/p' "$LAUNCHER_SCRIPT" 2>/dev/null | head -n1)
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR=$(sed -n 's/.*--user-data-dir="\([^"]*\)".*/\1/p' "$LAUNCHER_SCRIPT" 2>/dev/null | head -n1)
+fi
+
+# Stop any resident watchdog for this launcher first, so it can't resurrect
+# the instance being removed. (Matches only the launcher script's own process;
+# the Claude instance's command line never contains the launcher path.)
+PIDS=$(ps -axo pid=,command= | MS="$LAUNCHER_SCRIPT" awk 'BEGIN { s = ENVIRON["MS"] } index($0, s) { print $1 }') || true
+if [ -n "$PIDS" ]; then
+  echo "Stopping resident watchdog"
+  print -r -- "$PIDS" | xargs kill 2>/dev/null || true
+fi
 
 echo "Removing launcher: $APP_PATH"
 rm -rf "$APP_PATH"
+
+# Watchdog bookkeeping files (log + lock) are keyed to the display name.
+rm -f "$HOME/Library/Logs/claude-instances/$DISPLAY_NAME.log" \
+      "$HOME/Library/Logs/claude-instances/$DISPLAY_NAME.lock"
 
 if [ "$PURGE" -eq 1 ]; then
   if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR" ]; then
