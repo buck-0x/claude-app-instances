@@ -144,7 +144,10 @@ if [ "$DO_REOPEN" -eq 1 ]; then
           echo "   • $name: already running"
         else
           echo "   • $name: reopening"
-          open "$app"
+          # -n: launch even if LaunchServices holds a stale "running" record
+          # for a recently killed watchdog; the launcher's own lock makes
+          # duplicate starts harmless.
+          open -n "$app"
         fi ;;
     esac
   done
@@ -365,7 +368,7 @@ LSR="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices
 
 echo "Done."
 echo ""
-echo "Launch it:   open \"$APP_PATH\""
+echo "Launch it:   open -n \"$APP_PATH\""
 echo "Or find \"$DISPLAY_NAME\" in Spotlight / Launchpad."
 echo ""
 echo "The launcher stays resident (no Dock icon) and reopens this instance if a"
