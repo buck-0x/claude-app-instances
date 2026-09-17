@@ -164,7 +164,12 @@ Details worth knowing:
 ## ChatGPT instances
 
 The same trick works for OpenAI's **ChatGPT desktop app** — it is a
-Chromium-based build, so it honors `--user-data-dir` just like Claude:
+Chromium-based build, so it honors `--user-data-dir` just like Claude. It
+also needs a second knob: the app keeps chats, sessions, and auth in a
+"Codex home" (default `~/.codex`) that `--user-data-dir` does not move, so
+the launcher additionally gives each instance a private `CODEX_HOME` inside
+its data folder. Without it, an instance signed into a different account
+still shows the original account's chats.
 
 ```sh
 new-chatgpt "ChatGPT MyCompany"
@@ -187,8 +192,11 @@ Differences from Claude worth knowing:
   act as an http/https handler). macOS routes such links to whichever
   instance registered the scheme most recently — same caveat as Claude's
   `claude://` links, but it only affects "open in app" links, not login.
-- **Full profile isolation.** Each instance is a separate Chromium profile:
-  its own login, history, and settings.
+- **Two stores, one folder.** Each instance owns a separate Chromium profile
+  (cookies, web login) plus a separate `CODEX_HOME` at
+  `<data folder>/codex-home` (chats, sessions, app auth). `--purge` wipes
+  both. Launchers built before the `CODEX_HOME` fix shared `~/.codex`;
+  re-run `new-chatgpt` with the same name to rebuild them.
 
 Requires ChatGPT.app installed at `/Applications/ChatGPT.app`
 (from https://chatgpt.com/download).
