@@ -2,12 +2,12 @@
 #
 # new-chatgpt.sh — create a launcher app for a second, isolated ChatGPT instance.
 #
-# Each launcher opens the REAL, unmodified ChatGPT.app with its own
-# --user-data-dir, so it gets a separate login, history, and settings.
-# ChatGPT's own bundle is never touched or re-signed. The app is a
-# Chromium-based build, so --user-data-dir works exactly as it does for
-# Claude (verified: a second instance runs side by side with its own
-# profile while the main one keeps its default profile).
+# Each launcher runs the REAL, unmodified ChatGPT.app with its own
+# --user-data-dir (Chromium profile: cookies, web login) AND its own
+# CODEX_HOME (app data: chats, sessions, auth; default ~/.codex), so every
+# instance is fully separate. ChatGPT's own bundle is never touched or
+# re-signed. Both stores live under one data folder per instance
+# (verified: instances run side by side without sharing anything).
 #
 # Usage:
 #   new-chatgpt "ChatGPT Fulcra"
@@ -119,12 +119,18 @@ cat > "$APP_PATH/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# The executable launches the REAL ChatGPT with its own data dir. Because the
-# untouched, OpenAI-signed ChatGPT.app is what runs, its signature stays
-# intact and it does not crash.
+# The executable launches the REAL ChatGPT with its own data dir AND its own
+# CODEX_HOME. --user-data-dir isolates only the Chromium profile (cookies,
+# web login); the app keeps chats, sessions, and auth in CODEX_HOME (default
+# ~/.codex), which would otherwise be shared by every instance, leaking one
+# account's chats into another. Environment variables do not survive `open`
+# (launchd starts the app), so the launcher execs the binary directly.
+# CODEX_HOME lives inside the data dir so remove-chatgpt --purge wipes both.
 cat > "$APP_PATH/Contents/MacOS/launcher" <<LAUNCH
 #!/bin/zsh
-exec open -n -a "$CHATGPT_APP" --args --user-data-dir="$DATA_DIR"
+export CODEX_HOME="$DATA_DIR/codex-home"
+mkdir -p "\$CODEX_HOME"
+exec "$CHATGPT_APP/Contents/MacOS/ChatGPT" --user-data-dir="$DATA_DIR"
 LAUNCH
 chmod +x "$APP_PATH/Contents/MacOS/launcher"
 
@@ -148,5 +154,6 @@ echo ""
 echo "Launch it:   open \"$APP_PATH\""
 echo "Or find \"$DISPLAY_NAME\" in Spotlight / Launchpad."
 echo ""
-echo "First login: just sign in inside the new window — the session is stored"
-echo "in this instance's own data folder, so each instance keeps its own login."
+echo "First login: just sign in inside the new window. Login, chats, and"
+echo "settings all live in this instance's own data folder (including its"
+echo "private CODEX_HOME), so nothing is shared with other instances."
