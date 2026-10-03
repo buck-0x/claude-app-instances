@@ -139,15 +139,35 @@ quietly quits each running instance so it can swap that bundle. The relaunch
 doesn't reliably carry `--user-data-dir` for extra instances, so without help
 they collapse down to one after every update.
 
+Worse, the order is usually reversed from what you'd expect: each instance
+downloads the update, then quits itself once it's idle (no tasks running), but
+Squirrel's ShipIt only installs after **every** Claude process has quit. So
+idle instances close one by one, hours apart, while busy ones keep the install
+blocked, and nothing reopens the ones that closed.
+
 The launcher handles this: it stays resident as a tiny watchdog (no Dock icon)
-after starting its instance. If the instance disappears **and** Claude's bundle
-version changed, that was an update; the watchdog reopens the instance with its
-data dir. If the version didn't change, you quit it yourself; the watchdog
-stands down. It reopens at most once per new version, so it can never thrash.
+after starting its instance. When the instance disappears:
+
+- **Bundle version changed** (update already installed): reopen it, at most
+  once per new version, so it can never thrash.
+- **Update downloaded but not yet installed** (a staged bundle in
+  `~/Library/Caches/com.anthropic.claudefordesktop.ShipIt/`, or a ShipIt
+  process waiting): don't reopen yet, since a running instance would block the
+  install again. Wait for the install, then reopen. If the pending update goes
+  away without installing, or 4 hours pass, it reopens anyway.
+- **Neither**: you quit it yourself; the watchdog stands down.
 
 Details worth knowing:
 
-- Watchdog logs live in `~/Library/Logs/claude-instances/<Name>.log`.
+- Watchdog logs live in `~/Library/Logs/claude-instances/<Name>.log`. Every
+  disappearance logs a snapshot: the instance's pid and uptime, Claude and
+  staged-update versions, waiting ShipIt pids, which other instances are still
+  running (these are what block an install), any Claude crash or jetsam reports
+  since launch, and the relevant quit/update lines from Claude's own
+  `~/Library/Logs/Claude/main.log` (shared by all instances). `beforeQuitForUpdate`
+  there means the updater closed it.
+- Opening an instance's launcher while its watchdog is waiting (for an update,
+  or in the short grace window after a quit) reopens the instance right away.
 - Quitting an instance at the exact moment an update installs looks like an
   update quit, so it may reopen once; quit it again and it stays quit.
 - Launching an instance's launcher while the instance already runs never opens

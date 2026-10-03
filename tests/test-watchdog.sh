@@ -145,6 +145,83 @@ sleep 8
 if ! stub_running;             then ok "stub not relaunched again"; else bad "stub not relaunched again"; fi
 if ! kill -0 $WD3 2>/dev/null; then ok "watchdog exited";           else bad "watchdog exited"; kill $WD3 2>/dev/null; fi
 
+LOG="$LOG_DIR/$TEST_NAME.log"
+STUB_VER() { /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $1" "$STUB_APP/Contents/Info.plist"; }
+# Stage a fake Squirrel update the way ShipIt does: a JSON ShipItState.plist
+# pointing at an unpacked bundle; ShipIt deletes that bundle once installed.
+stage_update() {
+  mkdir -p "$SHIPIT/update.T1/FakeClaude.app/Contents"
+  cp "$STUB_APP/Contents/Info.plist" "$SHIPIT/update.T1/FakeClaude.app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $1" "$SHIPIT/update.T1/FakeClaude.app/Contents/Info.plist"
+  local url="file://$SHIPIT/update.T1/FakeClaude.app/"
+  print -r -- "{\"launchAfterInstallation\":true,\"updateBundleURL\":\"${url//\//\\/}\",\"bundleIdentifier\":\"local.test.fakeclaude\"}" > "$SHIPIT/ShipItState.plist"
+}
+unstage_update() { rm -rf "$SHIPIT/update.T1"; }
+log_has() { grep -qF -- "$1" "$LOG" 2>/dev/null; }
+
+export CLAUDE_LAUNCHER_SHIPIT_DIR="$TMP/ShipIt"
+export CLAUDE_LAUNCHER_CLAUDE_LOG="$TMP/main.log"
+SHIPIT="$CLAUDE_LAUNCHER_SHIPIT_DIR"
+mkdir -p "$SHIPIT"
+
+echo ""
+echo "Test 5a: quit to install a pending update waits, then reopens after install"
+"$LAUNCHER" &
+WD4=$!
+sleep 4
+stub_running || bad "precondition: stub running"
+stage_update 102
+sleep 3
+if log_has "update 102 downloaded"; then ok "logs the staged update while running"; else bad "logs the staged update while running"; fi
+print -r -- "$(date '+%Y-%m-%d %H:%M:%S') [info] [stealth-relaunch] otherAppFullScreen=false" >> "$CLAUDE_LAUNCHER_CLAUDE_LOG"
+kill_stub
+sleep 8
+if ! stub_running;             then ok "not reopened while update is still pending"; else bad "not reopened while update is still pending"; fi
+if kill -0 $WD4 2>/dev/null;   then ok "watchdog waits instead of standing down";   else bad "watchdog waits instead of standing down"; fi
+if log_has "update pending";   then ok "logs the pending-update wait";               else bad "logs the pending-update wait"; fi
+if log_has "claude log: " && log_has "stealth-relaunch"; then ok "logs Claude's own quit lines"; else bad "logs Claude's own quit lines"; fi
+if log_has "context:";         then ok "logs exit context";                          else bad "logs exit context"; fi
+STUB_VER 102; unstage_update
+sleep 6
+if stub_running;               then ok "reopened once the update installed"; else bad "reopened once the update installed"; fi
+if log_has "update installed (101 -> 102)"; then ok "logs the install"; else bad "logs the install"; fi
+
+echo ""
+echo "Test 5b: pending update that vanishes without installing still reopens"
+stage_update 103
+kill_stub
+sleep 8
+if ! stub_running; then ok "waits while pending"; else bad "waits while pending"; fi
+unstage_update
+sleep 5
+if stub_running; then ok "reopened after the pending update vanished"; else bad "reopened after the pending update vanished"; fi
+
+echo ""
+echo "Test 5c: opening the launcher during an update wait reopens immediately"
+stage_update 104
+kill_stub
+sleep 7
+stub_running && bad "precondition: still waiting"
+"$LAUNCHER" &
+sleep 5
+if stub_running; then ok "reopened on launcher click"; else bad "reopened on launcher click"; fi
+if log_has "to reopen it" && log_has "at launcher request"; then ok "reopened via the owning watchdog"; else bad "reopened via the owning watchdog"; fi
+unstage_update
+
+echo ""
+echo "Test 5d: quit then reopen within the grace window reopens (no update)"
+kill_stub
+sleep 1.5
+"$LAUNCHER" &
+sleep 6
+if stub_running;             then ok "quick reopen is honored"; else bad "quick reopen is honored"; fi
+if kill -0 $WD4 2>/dev/null; then ok "original watchdog keeps watching"; else bad "original watchdog keeps watching"; fi
+kill_stub
+sleep 6
+if ! kill -0 $WD4 2>/dev/null; then ok "plain quit still stands down"; else bad "plain quit still stands down"; kill $WD4 2>/dev/null; fi
+if log_has "no pending update; assuming intentional quit"; then ok "logs the quit reason"; else bad "logs the quit reason"; fi
+unset CLAUDE_LAUNCHER_SHIPIT_DIR CLAUDE_LAUNCHER_CLAUDE_LOG
+
 echo ""
 echo "Test 6: --reopen-all reopens a dead instance (default timings, via open)"
 "$NEW_CLAUDE" --reopen-all --apps "$APPS" | grep -q "reopening" \
