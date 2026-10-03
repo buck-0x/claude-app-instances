@@ -96,3 +96,30 @@ Re-running `new-claude "Name"` rebuilds a launcher in place; data dirs, logins,
 extensions and history are untouched. Each instance must be quit and reopened from
 its rebuilt launcher once so the watchdog is the thing that started it (or adopted
 via `--reopen-all` while running).
+
+## Addendum 2026-10-03: quit-before-install
+
+Observed 2026-09-22 to 10-01: instances still closed one by one and stayed closed.
+Each instance downloads the update, then quits itself once idle (`[stealth-relaunch]`,
+`beforeQuitForUpdate` in `main.log`, about 10 min after "Update downloaded"). ShipIt
+installs only after every process of the bundle has quit, so at that moment the
+bundle version is unchanged and the watchdog read it as a user quit. Only the last
+instance to quit saw the version change.
+
+Changes:
+
+- On disappearance with no version change, check for a pending update: a staged
+  bundle named by `ShipItState.plist` `updateBundleURL` (ShipIt deletes it once
+  installed) whose version differs from the installed one, or a running ShipIt.
+  If pending, wait without reopening (a running instance re-blocks the install)
+  until the version changes, the pending update vanishes, the launcher is opened
+  (USR1 from the second launcher to the lock owner), or
+  `CLAUDE_LAUNCHER_UPDATE_WAIT_SECS` (default 4h) passes; then reopen.
+- Opening the launcher while its watchdog is in the grace window or the update
+  wait reopens the instance (previously the second launcher exited and the owner
+  then stood down, leaving nothing open).
+- Exit diagnostics in the per-instance log: pid, uptime, versions, pending-update
+  state, other running instances, crash/jetsam reports since launch, and filtered
+  lines from Claude's shared `main.log`. Also logs when an update is staged while
+  the instance is running. Test hooks: `CLAUDE_LAUNCHER_SHIPIT_DIR`,
+  `CLAUDE_LAUNCHER_CLAUDE_LOG`, `CLAUDE_LAUNCHER_HEARTBEAT_SECS`.
