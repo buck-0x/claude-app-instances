@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import plistlib
+import signal
 import sqlite3
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -13,8 +15,10 @@ from typing import Literal
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from claude_instances.actions import ActionResult
 from claude_instances.crypto import derive_key
 from claude_instances.httpclient import ACCOUNT_PATH, ORGS_PATH, HttpResult
+from claude_instances.processes import ProcessLine
 from claude_instances.secret import Secret
 
 _CHROMIUM_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
@@ -189,3 +193,95 @@ def make_data_dir(
     if history is not None:
         (root / "plan-usage-history.json").write_text(history)
     return root
+
+
+class FakeSystemActions:
+    """SystemActions double: records every call and never touches the real machine.
+
+    Every method first calls `before_call(method_name)` when set (raise there to
+    simulate a failure), then appends `(method_name, *args)` to `calls`. `send_quit`
+    and any non-SIGKILL `signal_pids` make a pid vanish from `alive` and `ps` on the
+    `quit_after`-th later `processes()`/`is_alive()` poll (at once when 0); SIGKILL
+    removes it at once. Pids in `never_dies` never vanish. `launch` records the
+    target in `launched` and calls `on_launch(app_path)` when set.
+    """
+
+    def __init__(
+        self,
+        ps: list[ProcessLine] | None = None,
+        alive: set[int] | None = None,
+        quit_after: int = 1,
+        never_dies: set[int] | None = None,
+        front_result: ActionResult | None = None,
+        on_launch: Callable[[Path], None] | None = None,
+        before_call: Callable[[str], None] | None = None,
+    ) -> None:
+        self.ps = list(ps or [])
+        self.alive = set(alive or ())
+        self.quit_after = quit_after
+        self.never_dies = set(never_dies or ())
+        self.front_result = front_result
+        self.on_launch = on_launch
+        self.before_call = before_call
+        self.calls: list[tuple] = []
+        self.launched: list[Path] = []
+        self._dying: dict[int, int] = {}  # pid -> polls left before it vanishes
+
+    def _record(self, name: str, *args: object) -> None:
+        if self.before_call is not None:
+            self.before_call(name)
+        self.calls.append((name, *args))
+
+    def _remove(self, pid: int) -> None:
+        self._dying.pop(pid, None)
+        self.alive.discard(pid)
+        self.ps = [line for line in self.ps if line.pid != pid]
+
+    def _doom(self, pid: int) -> None:
+        if pid in self.never_dies:
+            return
+        if self.quit_after <= 0:
+            self._remove(pid)
+        else:
+            self._dying.setdefault(pid, self.quit_after)
+
+    def _tick(self) -> None:
+        for pid in list(self._dying):
+            self._dying[pid] -= 1
+            if self._dying[pid] <= 0:
+                self._remove(pid)
+
+    def bring_to_front(self, pid: int) -> ActionResult:
+        self._record("bring_to_front", pid)
+        return self.front_result or ActionResult(True, "brought to front")
+
+    def launch(self, app_path: Path) -> ActionResult:
+        self._record("launch", app_path)
+        self.launched.append(app_path)
+        if self.on_launch is not None:
+            self.on_launch(app_path)
+        return ActionResult(True, "launched")
+
+    def send_quit(self, pid: int) -> ActionResult:
+        self._record("send_quit", pid)
+        self._doom(pid)
+        return ActionResult(True, "asked to quit")
+
+    def signal_pids(self, pids: list[int], sig: int) -> None:
+        self._record("signal_pids", list(pids), sig)
+        for pid in pids:
+            if sig == signal.SIGKILL:
+                if pid not in self.never_dies:
+                    self._remove(pid)
+            else:
+                self._doom(pid)
+
+    def is_alive(self, pid: int) -> bool:
+        self._record("is_alive", pid)
+        self._tick()
+        return pid in self.alive
+
+    def processes(self) -> list[ProcessLine]:
+        self._record("processes")
+        self._tick()
+        return list(self.ps)
