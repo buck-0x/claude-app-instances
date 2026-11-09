@@ -118,6 +118,7 @@ def run_probe(
     try:
         password = read_secret_fd(key_fd)
     except ValueError as e:
+        # Safe to print only because read_secret_fd raises a fixed message, never key bytes.
         out(f"probe: {e}")
         return 1
     if password is None:
@@ -130,6 +131,8 @@ def run_probe(
     try:
         cookies = decrypt_store(store, derive_key(password))
     except ValueError as e:
+        # Safe to print only because crypto raises fixed messages (cookie name plus a
+        # fixed reason) with no chained cause; never key or plaintext bytes.
         out(f"probe: cannot decrypt cookies: {e}")
         return 1
     if "sessionKey" not in cookies:

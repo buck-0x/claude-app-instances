@@ -2,13 +2,15 @@
 
 Failures never raise and never carry an exception message (which may echo the URL
 or request headers): a transport error is reported by its exception type name only.
+Redirects are never followed, so the Cookie header cannot reach another host or a
+downgraded scheme; a 3xx comes back as its status.
 The endpoint paths are believed correct and are confirmed by the user-run probe.
 """
 
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import Message
 from typing import Any, Literal, Protocol
 
@@ -31,7 +33,7 @@ Kind = Literal["json", "html", "other", "error"]
 @dataclass
 class HttpResult:
     status: int
-    json: Any | None
+    json: Any | None = field(repr=False)
     kind: Kind
     error: str | None = None
 
@@ -40,10 +42,23 @@ class HttpClient(Protocol):
     def get(self, url: str, cookies: dict[str, Secret]) -> HttpResult: ...
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect; urllib then raises the 3xx as an HTTPError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _result(status: int, headers: Message, body: bytes) -> HttpResult:
     ctype = headers.get_content_type()
     if ctype == "application/json":
-        return HttpResult(status, json.loads(body), "json")
+        try:
+            return HttpResult(status, json.loads(body), "json")
+        except ValueError:
+            return HttpResult(status, None, "other")
     return HttpResult(status, None, "html" if ctype == "text/html" else "other")
 
 
@@ -56,7 +71,7 @@ class UrllibHttpClient(HttpClient):
         })
         try:
             try:
-                with urllib.request.urlopen(request, timeout=TIMEOUT_S) as resp:
+                with _OPENER.open(request, timeout=TIMEOUT_S) as resp:
                     return _result(resp.status, resp.headers, resp.read())
             except urllib.error.HTTPError as e:
                 with e:
