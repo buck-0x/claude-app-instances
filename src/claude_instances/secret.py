@@ -29,7 +29,9 @@ class Secret:
             return NotImplemented
         return self._value == other._value
 
-    __hash__ = None  # mutable-equality semantics; never used as a dict key
+    # Defining __eq__ already disables hashing; stated explicitly so a Secret is
+    # never usable as a dict key or set member (that would invite hashing secrets).
+    __hash__ = None
 
     def __len__(self) -> int:
         return len(self._value)
@@ -38,7 +40,8 @@ class Secret:
 def read_secret_fd(fd: int) -> Secret | None:
     """Read `fd` to EOF as UTF-8, strip one trailing newline and close it.
 
-    Returns None if `fd` is not open or yields nothing.
+    Returns None if `fd` is not open or yields nothing. Raises ValueError with a
+    fixed message (no secret bytes, no chained cause) if the payload is not UTF-8.
     """
     try:
         os.fstat(fd)
@@ -55,4 +58,14 @@ def read_secret_fd(fd: int) -> Secret | None:
         data = data[:-1]
     if not data:
         return None
-    return Secret(data.decode("utf-8"))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    # Drop the raw bytes before any raise so a traceback that prints locals
+    # cannot show them; the UnicodeDecodeError (whose .object holds the full
+    # payload) is already gone because it is never chained.
+    del data, chunks
+    if text is None:
+        raise ValueError("secret read from fd is not valid UTF-8") from None
+    return Secret(text)

@@ -30,3 +30,33 @@ def test_read_secret_fd_closed_fd_is_none():
     with pytest.raises(OSError):
         fcntl.fcntl(fd, fcntl.F_GETFD)  # proves it is not open
     assert read_secret_fd(fd) is None
+
+
+def _pipe_with(payload: bytes) -> int:
+    r, w = os.pipe()
+    os.write(w, payload)
+    os.close(w)
+    return r
+
+
+def test_read_secret_fd_lone_newline_is_none():
+    assert read_secret_fd(_pipe_with(b"\n")) is None
+
+
+def test_read_secret_fd_closes_fd():
+    r = _pipe_with(b"pw\n")
+    read_secret_fd(r)
+    with pytest.raises(OSError):
+        os.fstat(r)
+
+
+def test_read_secret_fd_non_utf8_raises_sanitized_error():
+    payload = b"hunter2\xff"
+    with pytest.raises(ValueError) as excinfo:
+        read_secret_fd(_pipe_with(payload))
+    err = excinfo.value
+    assert type(err) is ValueError  # not UnicodeDecodeError, whose .object holds the payload
+    assert err.__cause__ is None and err.__suppress_context__
+    assert "hunter2" not in str(err) and "\\xff" not in str(err) and "0xff" not in str(err)
+    tb = excinfo.traceback[-1]
+    assert all("hunter2" not in repr(v) for v in tb.locals.values())
