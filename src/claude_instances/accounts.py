@@ -6,13 +6,12 @@ instance name to account UUID that the user records; it is saved with mode 0600.
 """
 
 import json
-import os
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 from claude_instances.cookies import SessionState
+from claude_instances.jsonfile import write_private_json
 
 CONFIG_FILENAME = "config.json"
 ACCOUNT_KEY = "lastKnownAccountUuid"
@@ -57,17 +56,7 @@ class ExpectedAccounts:
 
     def save(self, path: Path) -> None:
         """Write the map atomically with mode 0600, creating the parent folder if needed."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self._accounts, f, indent=2, sort_keys=True)
-                f.write("\n")
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        write_private_json(path, self._accounts)
 
     def get(self, name: str) -> str | None:
         return self._accounts.get(name)
