@@ -2,10 +2,12 @@
 
 import hashlib
 import os
+import plistlib
 import sqlite3
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -119,3 +121,42 @@ def pipe_with(data: bytes) -> int:
     finally:
         os.close(w)
     return r
+
+
+def make_launcher_app(
+    apps_dir: Path,
+    name: str,
+    data_dir: Path,
+    bundle_id: str | None = None,
+    fmt: Literal["argless", "watchdog", "oneshot"] = "argless",
+    claude_app: Path = Path("/Applications/Claude.app"),
+    default_data_dir: Path | None = None,
+) -> Path:
+    """Write `<apps_dir>/<name>.app` shaped like a `new-claude` launcher; return its path.
+
+    `argless` and `watchdog` mirror the generated header (argless adds the
+    DEFAULT_DATA_DIR line); `oneshot` is the old single inline `open` line.
+    """
+    app = apps_dir / f"{name}.app"
+    (app / "Contents/MacOS").mkdir(parents=True, exist_ok=True)
+    if bundle_id is None:
+        bundle_id = f"local.launcher.{data_dir.name.lower()}"
+    with open(app / "Contents/Info.plist", "wb") as f:
+        plistlib.dump({
+            "CFBundleName": name,
+            "CFBundleDisplayName": name,
+            "CFBundleIdentifier": bundle_id,
+            "CFBundleExecutable": "launcher",
+            "CFBundlePackageType": "APPL",
+        }, f)
+    if fmt == "oneshot":
+        body = f'exec open -n -a "{claude_app}" --args --user-data-dir="{data_dir}"\n'
+    else:
+        body = f'CLAUDE_APP="{claude_app}"\nDATA_DIR="{data_dir}"\n'
+        if fmt == "argless":
+            default = default_data_dir or data_dir.parent / "Claude"
+            body += f'DEFAULT_DATA_DIR="{default}"\n'
+        body += f'INSTANCE_NAME="{name}"\n\n'
+        body += 'open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR"\n'
+    (app / "Contents/MacOS/launcher").write_text("#!/bin/zsh\n" + body)
+    return app
