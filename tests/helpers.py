@@ -202,8 +202,11 @@ class FakeSystemActions:
     simulate a failure), then appends `(method_name, *args)` to `calls`. `send_quit`
     and any non-SIGKILL `signal_pids` make a pid vanish from `alive` and `ps` on the
     `quit_after`-th later `processes()`/`is_alive()` poll (at once when 0); SIGKILL
-    removes it at once. Pids in `never_dies` never vanish. `launch` records the
-    target in `launched` and calls `on_launch(app_path)` when set.
+    removes it at once. Pids in `never_dies` never vanish; pids in `sigterm_ignored`
+    survive SIGTERM (a watchdog in a foreground sleep) but not SIGKILL. A pid in
+    `quit_results` gets that result from `send_quit` and does not vanish. `launch`
+    records the target in `launched` and calls `on_launch(app_path)` when set.
+    `locks` maps watchdog lock paths to the pid they name, in memory only.
     """
 
     def __init__(
@@ -215,6 +218,9 @@ class FakeSystemActions:
         front_result: ActionResult | None = None,
         on_launch: Callable[[Path], None] | None = None,
         before_call: Callable[[str], None] | None = None,
+        sigterm_ignored: set[int] | None = None,
+        quit_results: dict[int, ActionResult] | None = None,
+        locks: dict[Path, int] | None = None,
     ) -> None:
         self.ps = list(ps or [])
         self.alive = set(alive or ())
@@ -223,6 +229,9 @@ class FakeSystemActions:
         self.front_result = front_result
         self.on_launch = on_launch
         self.before_call = before_call
+        self.sigterm_ignored = set(sigterm_ignored or ())
+        self.quit_results = dict(quit_results or {})
+        self.locks = dict(locks or {})
         self.calls: list[tuple] = []
         self.launched: list[Path] = []
         self._dying: dict[int, int] = {}  # pid -> polls left before it vanishes
@@ -264,6 +273,8 @@ class FakeSystemActions:
 
     def send_quit(self, pid: int) -> ActionResult:
         self._record("send_quit", pid)
+        if pid in self.quit_results:
+            return self.quit_results[pid]
         self._doom(pid)
         return ActionResult(True, "asked to quit")
 
@@ -273,7 +284,7 @@ class FakeSystemActions:
             if sig == signal.SIGKILL:
                 if pid not in self.never_dies:
                     self._remove(pid)
-            else:
+            elif pid not in self.sigterm_ignored:
                 self._doom(pid)
 
     def is_alive(self, pid: int) -> bool:
@@ -285,3 +296,10 @@ class FakeSystemActions:
         self._record("processes")
         self._tick()
         return list(self.ps)
+
+    def remove_lock_if_names(self, lock: Path, pid: int) -> bool:
+        self._record("remove_lock_if_names", lock, pid)
+        if self.locks.get(lock) != pid:
+            return False
+        del self.locks[lock]
+        return True
