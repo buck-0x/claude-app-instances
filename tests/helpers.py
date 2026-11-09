@@ -1,6 +1,7 @@
 """Shared test fixture builders. Everything here writes under a caller-given tmp path."""
 
 import hashlib
+import json
 import os
 import plistlib
 import sqlite3
@@ -160,3 +161,31 @@ def make_launcher_app(
         body += 'open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR"\n'
     (app / "Contents/MacOS/launcher").write_text("#!/bin/zsh\n" + body)
     return app
+
+
+def make_data_dir(
+    root: Path,
+    account: str | None,
+    session_expiry: datetime | None | Literal["none"],
+    history: str | None,
+    created: int = 1,
+) -> Path:
+    """A data dir with `config.json`, a `Cookies` DB and optionally plan usage history.
+
+    `session_expiry` is the sessionKey expiry: a datetime, None for a browser-session
+    cookie (expires_utc 0), or "none" for no sessionKey row at all. The cookie value is
+    a placeholder; nothing here decrypts it. `account` None leaves config.json empty.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    config = {} if account is None else {"lastKnownAccountUuid": account}
+    (root / "config.json").write_text(json.dumps(config))
+    rows = []
+    if session_expiry != "none":
+        expires = 0 if session_expiry is None else chromium_us(session_expiry)
+        rows.append((".claude.ai", "sessionKey", b"v10placeholder", expires, created))
+    cookies = root / "Cookies"
+    cookies.unlink(missing_ok=True)
+    make_cookie_db(cookies, rows, version=24)
+    if history is not None:
+        (root / "plan-usage-history.json").write_text(history)
+    return root
