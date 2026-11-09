@@ -41,6 +41,10 @@ LAUNCH_TIMEOUT_S = 60
 POLL_S = 2
 # How many times ISOLATING quits newly started Claudes before giving up.
 ISOLATE_ROUNDS = 5
+# Before relaunching, how long to wait for processes already asked to quit to exit, so
+# the restore never re-arms a dying instance.
+RESTORE_SETTLE_S = 10
+SETTLE_POLL_S = 1
 
 _OWNER_PREFIX = "owner "
 
@@ -87,6 +91,15 @@ class _Failed(Exception):
 
 class _Cancelled(Exception):
     pass
+
+
+def _notify(on_phase: Callable[[SigninPhase, str], None], phase: SigninPhase,
+            message: str) -> None:
+    """Report a phase; a failing UI callback (say, during TUI shutdown) never stops the flow."""
+    try:
+        on_phase(phase, message)
+    except Exception:
+        pass
 
 
 def _stray_label(proc: MainProcess) -> str:
@@ -209,7 +222,7 @@ class SigninFlow:
             write_restore(self.restore_path, plan.restore)
         except OSError as e:
             message = f"could not write the restore file ({e.strerror or type(e).__name__})"
-            self.on_phase(SigninPhase.FAILED, message)
+            _notify(self.on_phase, SigninPhase.FAILED, message)
             return SigninResult(False, message)
         run = _Run(self, plan, cancelled)
         result = SigninResult(False, "sign-in failed")
@@ -225,10 +238,8 @@ class SigninFlow:
         finally:
             result.restored, result.restore_failed = run.restore()
             result.warnings = run.warnings
-        if result.ok:
-            self.on_phase(SigninPhase.DONE, result.message)
-        else:
-            self.on_phase(SigninPhase.FAILED, result.message)
+        phase = SigninPhase.DONE if result.ok else SigninPhase.FAILED
+        _notify(self.on_phase, phase, result.message)
         return result
 
 
@@ -246,6 +257,8 @@ class _Run:
         self._learn(plan.snapshot)
         self.restore_list = list(plan.restore)
         self.warnings: list[str] = []
+        self.asked_to_quit: set[int] = set()
+        self.refused_to_quit: set[int] = set()
 
     def _learn(self, snapshot: Snapshot) -> None:
         for r in snapshot.rows:
@@ -253,7 +266,7 @@ class _Run:
             self.positions[r.name] = r.position
 
     def _phase(self, phase: SigninPhase, message: str) -> None:
-        self.flow.on_phase(phase, message)
+        _notify(self.flow.on_phase, phase, message)
 
     def _check_cancel(self) -> None:
         if self.cancelled.is_set():
@@ -279,8 +292,11 @@ class _Run:
             names_left = dict.fromkeys(owner.get(pid, f"pid {pid}") for pid in survivors)
             raise _Failed(f"watchdog did not stop: {', '.join(names_left)}")
 
-    def _quit(self, pids: list[int], labels: dict[int, str]) -> None:
-        """Quit those of `pids` a fresh `ps` still shows as Claude mains, never the target's."""
+    def _quit(self, pids: list[int], labels: dict[int, str]) -> list[int]:
+        """Quit those of `pids` a fresh `ps` still shows as Claude mains, never the target's.
+
+        Returns the pids it quit.
+        """
         lines = self.actions.processes()
         mains: dict[int, MainProcess] = {}
         for app in dict.fromkeys(l.claude_app for l in self.launchers.values()):
@@ -291,14 +307,17 @@ class _Run:
         target_pids = {r.pid for r in matched[self.target]}
         live = [pid for pid in pids if pid in mains and pid not in target_pids]
         if not live:
-            return
+            return []
+        self.asked_to_quit.update(live)
         try:
             survivors = quit_pids(live, self.actions, self.flow.sleep)
         except QuitRequestFailed as e:
             raise _Failed(f"could not ask to quit: {e}") from None
         if survivors:
+            self.refused_to_quit.update(survivors)
             left = dict.fromkeys(labels.get(pid, f"pid {pid}") for pid in survivors)
             raise _Failed(f"did not quit: {', '.join(left)}")
+        return live
 
     # -- the sign-in itself, spec steps 3 to 6 --
 
@@ -324,6 +343,10 @@ class _Run:
             snapshot = self._refresh()
             self._check_cancel()
             row = snapshot.row(self.target)
+            if row.is_duplicate:
+                raise _Failed(f"{self.target} has more than one process on its folder")
+            if not row.is_running:
+                raise _Failed(f"{self.target} stopped while waiting for the login")
             for pid in self._other_pids(snapshot):
                 if pid not in warned:
                     warned.add(pid)
@@ -339,7 +362,8 @@ class _Run:
     def _launch_target(self) -> Snapshot:
         name = self.target
         self._phase(SigninPhase.LAUNCHING, f"starting {name}")
-        if not self.plan.snapshot.row(name).is_running:
+        # A fresh ps decides, not the plan: the target may have started or stopped since.
+        if not self._still_running(self.launchers[name]):
             result = guarded_launch(self.launchers[name], self.actions,
                                     self.flow.default_data_dir)
             if not result.ok and result.message != "already running":
@@ -386,8 +410,7 @@ class _Run:
                 write_restore(self.flow.restore_path, self.restore_list)
             self._stop_watchdogs([r.name for r in others])
             labels = _pid_labels(snapshot)
-            self._quit(pids, labels)
-            for pid in pids:
+            for pid in self._quit(pids, labels):
                 label = labels[pid].removesuffix(f" (pid {pid})")
                 self.warnings.append(f"quit {label} (pid {pid}) that started during sign-in")
             snapshot = self._refresh()
@@ -404,12 +427,30 @@ class _Run:
         matched, _ = match_instances(procs, [launcher], self.flow.default_data_dir)
         return bool(matched[launcher.name])
 
+    def _settle(self) -> None:
+        """Wait up to `RESTORE_SETTLE_S` for processes asked to quit to exit.
+
+        Pids that already outlasted the quit timeout are not waited on again.
+        """
+        pending = self.asked_to_quit - self.refused_to_quit
+        waited = 0
+        while pending:
+            try:
+                pending = {pid for pid in pending if self.actions.is_alive(pid)}
+            except Exception:
+                return
+            if not pending or waited >= RESTORE_SETTLE_S:
+                return
+            self.flow.sleep(SETTLE_POLL_S)
+            waited += SETTLE_POLL_S
+
     def restore(self) -> tuple[list[str], list[tuple[str, str]]]:
         """Relaunch the restore list in launch order; keep refusals in the restore file."""
         restored: list[str] = []
         failed: list[tuple[str, str]] = []
         if self.restore_list:
             self._phase(SigninPhase.RESTORING, f"relaunching {', '.join(self.restore_list)}")
+            self._settle()
         gap_due = False
         for name in self.restore_list:
             launcher = self.launchers[name]
