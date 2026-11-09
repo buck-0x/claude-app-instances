@@ -303,3 +303,35 @@ class FakeSystemActions:
             return False
         del self.locks[lock]
         return True
+
+
+class ScriptedRefresh:
+    """A snapshot `refresh` double that replays `items` in order.
+
+    The n-th call (1-based, counted in `calls`) first runs `on_call.get(n)` when set,
+    then raises the item if it is an exception or returns it; the last item repeats
+    once the list is exhausted. Returned snapshots are recorded in `returned`.
+    """
+
+    def __init__(
+        self,
+        items: list[object],
+        on_call: dict[int, Callable[[], None]] | None = None,
+    ) -> None:
+        if not items:
+            raise ValueError("ScriptedRefresh needs at least one item")
+        self.items = list(items)
+        self.on_call = dict(on_call or {})
+        self.calls = 0
+        self.returned: list[object] = []
+
+    def __call__(self) -> object:
+        self.calls += 1
+        hook = self.on_call.get(self.calls)
+        if hook is not None:
+            hook()
+        item = self.items[min(self.calls, len(self.items)) - 1]
+        if isinstance(item, BaseException):
+            raise item
+        self.returned.append(item)
+        return item
