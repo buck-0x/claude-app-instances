@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from claude_instances import paths
 from claude_instances.launchers import Launcher
 from claude_instances.processes import (
     MainProcess,
@@ -69,6 +70,18 @@ class SystemActions(Protocol):
     def signal_pids(self, pids: list[int], sig: int) -> None: ...
     def is_alive(self, pid: int) -> bool: ...
     def processes(self) -> list[ProcessLine]: ...
+    def remove_lock_if_names(self, lock: Path, pid: int) -> bool: ...
+
+
+def remove_lock_if_names(lock: Path, pid: int) -> bool:
+    """Remove the watchdog lock symlink `lock` only if it points at `pid`."""
+    try:
+        if os.readlink(lock) != str(pid):
+            return False
+        os.unlink(lock)
+    except OSError:
+        return False
+    return True
 
 
 def automation_denied(stderr: str) -> bool:
@@ -139,6 +152,9 @@ class MacSystemActions(SystemActions):
     def processes(self) -> list[ProcessLine]:
         return list_processes()
 
+    def remove_lock_if_names(self, lock: Path, pid: int) -> bool:
+        return remove_lock_if_names(lock, pid)
+
 
 # ---- guarded launch -------------------------------------------------------------
 
@@ -204,36 +220,64 @@ def _wait_gone(
         waited += interval
 
 
-def stop_watchdogs(
+def _stop_watchdogs(
     script_paths: list[Path],
     actions: SystemActions,
-    sleep: Callable[[float], None] = time.sleep,
-    timeout_s: int = WATCHDOG_STOP_TIMEOUT_S,
-) -> list[int]:
-    """Stop every process whose command line contains one of `script_paths`.
-
-    SIGTERM, wait up to `timeout_s`, then SIGKILL survivors and wait 2 s more.
-    Returns the pids still alive. Claude itself is never touched, since its command
-    line never contains a launcher script path. Raises if `ps` cannot be read.
-    """
+    sleep: Callable[[float], None],
+    timeout_s: float,
+    locks: list[Path],
+) -> tuple[list[int], list[int]]:
+    """`stop_watchdogs`, also returning the watchdog pids it found: (found, survivors)."""
 
     def remaining() -> list[int]:
         lines = actions.processes()
         return sorted({pid for script in script_paths for pid in watchdog_pids(lines, script)})
 
-    pids = remaining()
-    if not pids:
-        return []
+    found = remaining()
+    if not found:
+        return [], []
 
     def still_running() -> list[int]:
-        return [pid for pid in remaining() if pid in pids]
+        return [pid for pid in remaining() if pid in found]
 
-    actions.signal_pids(pids, signal.SIGTERM)
+    actions.signal_pids(found, signal.SIGTERM)
     left = _wait_gone(still_running, sleep, WATCHDOG_POLL_S, timeout_s)
     if not left:
-        return []
+        return found, []
     actions.signal_pids(left, signal.SIGKILL)
-    return _wait_gone(still_running, sleep, WATCHDOG_POLL_S, WATCHDOG_KILL_WAIT_S)
+    survivors = _wait_gone(still_running, sleep, WATCHDOG_POLL_S, WATCHDOG_KILL_WAIT_S)
+    # SIGKILL skips the watchdog's EXIT trap, so its lock still names the dead pid; a
+    # later launcher could take a reused pid for a live watchdog. Remove only a lock
+    # that names a pid we killed and saw vanish.
+    for pid in left:
+        if pid not in survivors:
+            for lock in locks:
+                actions.remove_lock_if_names(lock, pid)
+    return found, survivors
+
+
+def stop_watchdogs(
+    script_paths: list[Path],
+    actions: SystemActions,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout_s: int = WATCHDOG_STOP_TIMEOUT_S,
+    locks: list[Path] | None = None,
+) -> list[int]:
+    """Stop every process whose command line contains one of `script_paths`.
+
+    SIGTERM, wait up to `timeout_s`, then SIGKILL survivors and wait 2 s more.
+    Returns the pids still alive. After a SIGKILL, each of `locks` that still names
+    a killed pid is removed. Claude itself is never touched, since its command line
+    never contains a launcher script path. Raises if `ps` cannot be read.
+
+    zsh runs a TERM trap only once its foreground command ends, and the watchdog
+    sleeps up to 20 s after a launch, so the SIGKILL path is reachable in normal use.
+    """
+    return _stop_watchdogs(script_paths, actions, sleep, timeout_s, locks or [])[1]
+
+
+class QuitRequestFailed(Exception):
+    """A quit request could not be delivered (for example, permission denied)."""
 
 
 def quit_pids(
@@ -242,9 +286,14 @@ def quit_pids(
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: int = QUIT_TIMEOUT_S,
 ) -> list[int]:
-    """Ask each pid to quit, then poll every 1 s up to `timeout_s`; return survivors."""
-    for pid in pids:
-        actions.send_quit(pid)
+    """Ask each pid to quit, then poll every 1 s up to `timeout_s`; return survivors.
+
+    Raises `QuitRequestFailed` without polling when any request fails, so the caller
+    reports the real reason instead of a timeout 30 s later.
+    """
+    failures = [r.message for r in (actions.send_quit(pid) for pid in pids) if not r.ok]
+    if failures:
+        raise QuitRequestFailed("; ".join(failures))
     return _wait_gone(lambda: [p for p in pids if actions.is_alive(p)],
                       sleep, QUIT_POLL_S, timeout_s)
 
@@ -256,24 +305,63 @@ class QuitOutcome(Enum):
     NOT_RUNNING = "not running"
 
 
+def _still_this_instance(
+    state: InstanceState, lines: list[ProcessLine], default_data_dir: Path
+) -> list[int]:
+    """The snapshot pids that `lines` still show as this launcher's Claude mains."""
+    launcher = state.launcher
+    procs = main_processes(lines, claude_binary(launcher.claude_app))
+    matched, _ = match_instances(procs, [launcher], default_data_dir)
+    current = {r.pid for r in matched[launcher.name]}
+    return [pid for pid in state.pids if pid in current]
+
+
 def quit_instance(
-    state: InstanceState, actions: SystemActions, sleep: Callable[[float], None] = time.sleep
+    state: InstanceState,
+    actions: SystemActions,
+    sleep: Callable[[float], None] = time.sleep,
+    default_data_dir: Path | None = None,
+    log_dir: Path | None = None,
 ) -> tuple[QuitOutcome, str]:
     """Stop the instance's watchdog, and only once it is confirmed gone, quit the instance.
 
     If the watchdog cannot be stopped, or `ps` cannot be read to confirm it, the
-    instance is left running: a quit with a live watchdog would not stay quit.
+    instance is left running: a quit with a live watchdog would not stay quit. The
+    quit goes only to snapshot pids that a fresh `ps` read still shows as this
+    instance, so a reused pid is never signalled. A row that is not running but has
+    a watchdog waiting to reopen it gets that watchdog stopped.
+    `default_data_dir` and `log_dir` default to `paths.default_data_dir()` and
+    `paths.log_dir()`.
     """
-    if not state.pids:
-        return QuitOutcome.NOT_RUNNING, "not running"
+    if default_data_dir is None:
+        default_data_dir = paths.default_data_dir()
+    if log_dir is None:
+        log_dir = paths.log_dir()
+    lock = log_dir / f"{state.name}.lock"
     try:
-        stuck = stop_watchdogs([state.launcher.script_path], actions, sleep)
+        found, stuck = _stop_watchdogs([state.launcher.script_path], actions, sleep,
+                                       WATCHDOG_STOP_TIMEOUT_S, [lock])
     except _PS_ERRORS:
         return (QuitOutcome.WATCHDOG_STUCK,
                 f"{PS_UNREADABLE} to stop the watchdog; instance left running")
     if stuck:
         return QuitOutcome.WATCHDOG_STUCK, "watchdog did not stop; instance left running"
-    if quit_pids(state.pids, actions, sleep):
+    if not state.pids:
+        if found:
+            return QuitOutcome.NOT_RUNNING, f"stopped watchdog waiting to reopen {state.name}"
+        return QuitOutcome.NOT_RUNNING, "not running"
+    try:
+        pids = _still_this_instance(state, actions.processes(), default_data_dir)
+    except _PS_ERRORS:
+        return (QuitOutcome.DID_NOT_QUIT,
+                f"{PS_UNREADABLE}; watchdog stopped, instance left running")
+    if not pids:
+        return QuitOutcome.QUIT, "already quit; watchdog stopped"
+    try:
+        survivors = quit_pids(pids, actions, sleep)
+    except QuitRequestFailed as e:
+        return QuitOutcome.DID_NOT_QUIT, f"could not ask it to quit ({e}); watchdog stopped"
+    if survivors:
         return QuitOutcome.DID_NOT_QUIT, "did not quit; watchdog stopped"
     return QuitOutcome.QUIT, "quit"
 
