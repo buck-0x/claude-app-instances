@@ -1,7 +1,9 @@
 """Shared test fixture builders. Everything here writes under a caller-given tmp path."""
 
 import hashlib
+import os
 import sqlite3
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from claude_instances.crypto import derive_key
+from claude_instances.httpclient import ACCOUNT_PATH, ORGS_PATH, HttpResult
 from claude_instances.secret import Secret
 
 _CHROMIUM_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
@@ -72,3 +75,47 @@ def make_signed_in_dir(
                      encrypt_cookie(org, key, ".claude.ai", 24), expires, created))
     make_cookie_db(root / "Cookies", rows, version=24)
     return root
+
+
+class FakeHttp:
+    """HttpClient double: records request paths and answers per endpoint.
+
+    Returns `usage` for paths ending `/usage`, `account` for ACCOUNT_PATH, `orgs` for
+    ORGS_PATH, or a 404 "other" result when the matching argument is None.
+    """
+
+    def __init__(
+        self,
+        orgs: HttpResult | None = None,
+        account: HttpResult | None = None,
+        usage: HttpResult | None = None,
+    ) -> None:
+        self.orgs = orgs
+        self.account = account
+        self.usage = usage
+        self.paths: list[str] = []
+        self.cookies: list[dict[str, Secret]] = []
+
+    def get(self, url: str, cookies: dict[str, Secret]) -> HttpResult:
+        path = urllib.parse.urlsplit(url).path
+        self.paths.append(path)
+        self.cookies.append(cookies)
+        if path.endswith("/usage"):
+            result = self.usage
+        elif path == ACCOUNT_PATH:
+            result = self.account
+        elif path == ORGS_PATH:
+            result = self.orgs
+        else:
+            result = None
+        return result if result is not None else HttpResult(404, None, "other")
+
+
+def pipe_with(data: bytes) -> int:
+    """Read end of a pipe holding `data`, with the write end already closed."""
+    r, w = os.pipe()
+    try:
+        os.write(w, data)
+    finally:
+        os.close(w)
+    return r
