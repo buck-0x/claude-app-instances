@@ -1,0 +1,11 @@
+  501 /Applications/Claude.app/Contents/MacOS/Claude --user-data-dir=/Users/u/Library/Application Support/Claude-V1
+  502 /Applications/Claude.app/Contents/MacOS/Claude --user-data-dir=/Users/u/Library/Application Support/Claude-V12
+  503 /Applications/Claude.app/Contents/MacOS/Claude --type=utility --utility-sub-type=network.mojom.NetworkService --user-data-dir=/Users/u/Library/Application Support/Claude-V1 --lang=en-US
+  504 /Applications/Claude.app/Contents/MacOS/Claude
+  505 /Applications/Claude.app/Contents/MacOS/Claude --user-data-dir=/Users/u/Library/Application Support/Claude-Dup
+  506 /Applications/Claude.app/Contents/MacOS/Claude --user-data-dir=/Users/u/Library/Application Support/Claude-Dup --no-sandbox
+  507 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --type=renderer --user-data-dir=/Users/u/Library/Application Support/Claude-V1
+  508 /bin/zsh /Apps/Claude V1.app/Contents/MacOS/launcher
+  509 /usr/bin/grep Claude
+  510 /Applications/Claude.app/Contents/MacOS/Claude /tmp/script.js --foo
+  511 /Applications/Claude.app/Contents/MacOS/Claude -psn_0_12345
