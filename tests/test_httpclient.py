@@ -12,6 +12,7 @@ _ROUTES = {
     "/unauth": (401, "application/json", json.dumps({"error": "x"}).encode()),
     "/challenge": (403, "text/html; charset=utf-8", b"<html>"),
     "/boom": (500, "text/plain", b"boom"),
+    "/badjson": (502, "application/json", b"{not json"),
 }
 
 
@@ -21,13 +22,18 @@ class _Server(str):
     seen: list[dict[str, str]]
 
 
-@pytest.fixture
-def server():
+def _serve():
     seen: list[dict[str, str]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             seen.append(dict(self.headers))
+            if self.path.startswith("/redirect?to="):
+                self.send_response(302)
+                self.send_header("Location", self.path.split("=", 1)[1])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             status, ctype, body = _ROUTES.get(self.path, (404, "text/plain", b""))
             self.send_response(status)
             self.send_header("Content-Type", ctype)
@@ -43,6 +49,22 @@ def server():
     thread.start()
     base = _Server(f"http://127.0.0.1:{httpd.server_address[1]}")
     base.seen = seen
+    return base, httpd
+
+
+@pytest.fixture
+def server():
+    base, httpd = _serve()
+    try:
+        yield base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.fixture
+def other_server():
+    base, httpd = _serve()
     try:
         yield base
     finally:
@@ -75,3 +97,20 @@ def test_client_sends_cookie_and_user_agent(server):
     assert headers["Cookie"] == "sessionKey=v; lastActiveOrg=o"
     assert headers["User-Agent"].startswith("Mozilla/5.0")
     assert headers["Accept"] == "application/json"
+
+
+def test_client_does_not_follow_redirects(server, other_server):
+    r = UrllibHttpClient().get(
+        f"{server}/redirect?to={other_server}/ok", {"sessionKey": Secret("sk-ant-secret")}
+    )
+    assert (r.status, r.kind, r.json) == (302, "other", None)
+    assert other_server.seen == []
+    assert len(server.seen) == 1
+
+
+def test_client_malformed_json_keeps_status(server):
+    assert UrllibHttpClient().get(f"{server}/badjson", {}) == HttpResult(502, None, "other")
+
+
+def test_result_repr_hides_body():
+    assert "secret-body" not in repr(HttpResult(200, {"k": "secret-body"}, "json"))
