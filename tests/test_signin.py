@@ -408,3 +408,60 @@ def test_isolating_gives_up_when_others_keep_starting(tmp_path, fake):
     r = flow.run(plan_signin(snap0, "T"), threading.Event())
     assert (r.ok, r.message) == (False, "other Claude processes kept starting; sign-in stopped")
     assert refresh.calls == 1 + signin.ISOLATE_ROUNDS and r.restored == ["P", "C", "W"]
+
+
+# ---- review fixes ---------------------------------------------------------------
+
+def test_failing_phase_callback_never_stops_the_flow_or_the_restore(tmp_path, fake):
+    def on_phase(phase: SigninPhase, _message: str) -> None:
+        if phase in (SigninPhase.WAITING_FOR_LOGIN, SigninPhase.RESTORING, SigninPhase.DONE):
+            raise RuntimeError("app has stopped")
+    refresh = ScriptedRefresh([ALONE, after(created=5)])
+    flow = SigninFlow(fake, refresh, tmp_path, DEFAULT, sleep=noop, log_dir=LOGS,
+                      on_phase=on_phase)
+    r = flow.run(plan_signin(snap0, "T"), threading.Event())
+    assert r.ok and r.restored == ["P", "C", "W"]
+    assert fake.launched == [APP["T"], APP["P"], APP["C"], APP["W"]]
+    assert not (tmp_path / RESTORE).exists()
+
+
+def test_isolating_warns_only_for_pids_it_quit(tmp_path, fake):
+    gone = MainProcess(603, UNKNOWN)  # in the snapshot, already gone from ps
+    refresh = ScriptedRefresh([after(strays=[gone]), ALONE, after(created=5)])
+    flow = SigninFlow(fake, refresh, tmp_path, DEFAULT, sleep=noop, log_dir=LOGS)
+    r = flow.run(plan_signin(snap0, "T"), threading.Event())
+    assert r.ok and r.warnings == [] and ("send_quit", 603) not in fake.calls
+
+
+def test_target_started_since_the_plan_is_not_launched(tmp_path, fake, flow):
+    fake.ps.append(main_line(T_PID, Path("/Support/T")))
+    fake.alive.add(T_PID)
+    r = flow.run(plan_signin(snap0, "T"), threading.Event())  # the plan saw T closed
+    assert r.ok and APP["T"] not in fake.launched and ("send_quit", T_PID) not in fake.calls
+
+
+def test_target_stopping_while_waiting_fails_and_restores(tmp_path, fake):
+    refresh = ScriptedRefresh([ALONE, NOT_RUNNING])
+    flow = SigninFlow(fake, refresh, tmp_path, DEFAULT, sleep=noop, log_dir=LOGS)
+    r = flow.run(plan_signin(snap0, "T"), threading.Event())
+    assert (r.ok, r.message) == (False, "T stopped while waiting for the login")
+    assert refresh.calls == 2 and r.restored == ["P", "C", "W"]
+
+
+def test_failed_quit_request_waits_for_dying_instances_before_relaunch(tmp_path, monkeypatch):
+    fake = make_fake()
+    fake.quit_after = 4  # asked processes take a few polls to exit
+    fake.quit_results = {505: ActionResult(False, "permission denied")}
+    rearms = []
+    real = signin.guarded_launch
+
+    def spy(launcher, *a, rearm=False, **k):
+        rearms.append((launcher.name, rearm))
+        return real(launcher, *a, rearm=rearm, **k)
+
+    monkeypatch.setattr(signin, "guarded_launch", spy)
+    flow = SigninFlow(fake, ScriptedRefresh([ALONE]), tmp_path, DEFAULT, sleep=noop,
+                      log_dir=LOGS)
+    r = flow.run(plan_signin(snap0, "T"), threading.Event())
+    assert not r.ok and "permission denied" in r.message
+    assert rearms == [("P", False), ("C", False), ("W", False)] and r.restored == ["P", "C", "W"]
