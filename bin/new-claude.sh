@@ -26,6 +26,9 @@ set -e
 # ---- config ------------------------------------------------------------------
 CLAUDE_APP="/Applications/Claude.app"
 SUPPORT_DIR="$HOME/Library/Application Support"
+# Claude's default data folder (used by a Claude started with no
+# --user-data-dir). CLAUDE_LAUNCHER_DEFAULT_DATA_DIR is a test hook.
+DEFAULT_DATA_DIR="${CLAUDE_LAUNCHER_DEFAULT_DATA_DIR:-$SUPPORT_DIR/Claude}"
 
 # ---- parse arguments ---------------------------------------------------------
 DISPLAY_NAME=""
@@ -72,16 +75,28 @@ launcher_claude_app() {
 }
 
 # Is an instance of $1 (app bundle) running with --user-data-dir=$2 exactly?
+# When $2 is the default data folder, an argless main process (the binary alone
+# or followed by flags only, no --user-data-dir= and no --type=) counts too.
+# Only the argless branch needs the binary at a word start; the
+# --user-data-dir branch keeps its substring match (a bundle under a symlinked
+# path, such as /tmp, shows in ps under its real /private/tmp path).
 # Search strings go through the environment, NOT awk -v: values on awk's own
 # command line can match awk's own ps entry (racy self-match).
 instance_running_for() {
-  local capp="$1" datadir="$2" exe=""
+  local capp="$1" datadir="$2" exe="" isdef=0
   exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$capp/Contents/Info.plist" 2>/dev/null) || exe=""
-  ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" awk '
-    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"] }
-    index($0, b) && (i = index($0, d)) {
-      r = substr($0, i + length(d), 1)
-      if (r == "" || r == " ") { f = 1; exit }
+  [ "$datadir" = "$DEFAULT_DATA_DIR" ] && isdef=1
+  ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" MDEF="$isdef" awk '
+    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
+    (j = index($0, b)) {
+      if (i = index($0, d)) {
+        r = substr($0, i + length(d), 1)
+        if (r == "" || r == " ") { f = 1; exit }
+      } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
+                 !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        a = substr($0, j + length(b), 2)
+        if (a == "" || a == " -") { f = 1; exit }
+      }
     }
     END { exit f ? 0 : 1 }'
 }
@@ -226,6 +241,7 @@ cat > "$APP_PATH/Contents/MacOS/launcher" <<HDR
 # the update installs); stands down when you quit it (no update involved).
 CLAUDE_APP="$CLAUDE_APP"
 DATA_DIR="$DATA_DIR"
+DEFAULT_DATA_DIR="$DEFAULT_DATA_DIR"
 INSTANCE_NAME="$DISPLAY_NAME"
 HDR
 
@@ -275,15 +291,26 @@ claude_binary() {
 }
 
 # Exact match on the main binary AND our exact --user-data-dir (boundary-checked
-# so ".../Claude-V1" never matches ".../Claude-V12"). Search strings go through
-# the environment, NOT awk -v: values on awk's own command line can match awk's
-# own ps entry (racy self-match).
+# so ".../Claude-V1" never matches ".../Claude-V12"). When DATA_DIR is the
+# default data folder, an argless main process (the binary alone or followed
+# by flags only, no --user-data-dir= and no --type=) is this instance too
+# (word-start check on that branch only, as in instance_running_for).
+# Search strings go through the environment, NOT awk -v: values on awk's own
+# command line can match awk's own ps entry (racy self-match).
 instance_pid() {
-  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" awk '
-    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"] }
-    index($0, b) && (i = index($0, d)) {
-      r = substr($0, i + length(d), 1)
-      if (r == "" || r == " ") { print $1; f = 1; exit }
+  local isdef=0
+  [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] && isdef=1
+  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" MDEF="$isdef" awk '
+    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
+    (j = index($0, b)) {
+      if (i = index($0, d)) {
+        r = substr($0, i + length(d), 1)
+        if (r == "" || r == " ") { print $1; f = 1; exit }
+      } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
+                 !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        a = substr($0, j + length(b), 2)
+        if (a == "" || a == " -") { print $1; f = 1; exit }
+      }
     }
     END { exit f ? 0 : 1 }'
 }
