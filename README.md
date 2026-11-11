@@ -201,7 +201,7 @@ selected instance:
 | --- | --- |
 | `f` | bring to front |
 | `l` | launch |
-| `q` | quit |
+| `q` | quit the selected instance |
 | `w` | re-arm the watchdog (a fresh watchdog adopts the running instance) |
 | `a` | launch all instances that aren't running, in table order |
 | `r` | refresh usage now |
@@ -210,7 +210,7 @@ selected instance:
 | `o` | open the watchdog log |
 | `m` | mark the current account as the expected one |
 | `shift+up` / `shift+down` | move the row; the order is saved for `a` and `--launch-all` |
-| `ctrl+q` | exit |
+| `ctrl+q` | exit the TUI |
 
 ### Install
 
@@ -311,7 +311,10 @@ For example, a launcher named "Claude Personal" whose data is
 new-claude "Claude Personal" --dir Claude
 ```
 
-The TUI's details view (`d`) shows the exact command for each launcher.
+The TUI's details view (`d`) shows the exact command for each launcher. A
+launcher whose data folder is not directly under
+`~/Library/Application Support` has no rebuild command there (the view says it
+cannot be rebuilt with new-claude), because `new-claude --dir` cannot build it.
 
 ### Dock app
 
