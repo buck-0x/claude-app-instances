@@ -1,9 +1,12 @@
 """The instances TUI: one table of Claude instances, their accounts and usage, and actions.
 
-Threading rules. Every `Backend` call that can block (`ps`, quitting, launching, live
-lookups) runs in a thread worker, never on the event loop; each worker body catches
-its own exceptions, because Textual prints an uncaught one as a traceback with local
-variables and those could hold account details. Results reach the loop through
+Threading rules. The slow `Backend` calls (quitting, launching, launch all, re-arm,
+bring to front, live lookups) run in thread workers. Quick local reads stay on the
+event loop: `refresh_state`, `do_signin` and `do_move` call `snapshot()` (one `ps`
+read plus small files) there. Every worker body and every loop-side callback catches
+its own exceptions into a one-line status naming only the exception type, because
+Textual prints an uncaught one as a traceback with local variables and those could
+hold account details. Results reach the loop through
 `call_from_thread` (or, from the sign-in thread, through `post_message`, which never
 blocks, so `finish_signin` may join that thread from the loop). The `LiveScheduler`
 is touched on the event loop only.
@@ -13,6 +16,7 @@ built-in action exits without that.
 """
 
 import asyncio
+import functools
 import os
 import shlex
 import signal
@@ -29,7 +33,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 
 from claude_instances.accounts import short_id
-from claude_instances.actions import AUTOMATION_HELP, LAUNCH_GAP_S, QuitOutcome
+from claude_instances.actions import AUTOMATION_HELP, QuitOutcome
 from claude_instances.backend import Backend
 from claude_instances.cookies import SessionState
 from claude_instances.paths import RESTORE_FILE
@@ -48,19 +52,15 @@ from claude_instances.signin import (
     SigninResult,
     clear_restore,
     plan_signin,
+    read_restore,
     write_restore,
 )
 from claude_instances.snapshot import InstanceState, Snapshot
-from claude_instances.usage import (
-    LIVE_STALE_AFTER_S,
-    NO_DATA,
-    Source,
-    Usage,
-    format_cell,
-    level,
-)
+from claude_instances.usage import NO_DATA, Usage, format_cell, is_live, level
 
 LIVE_TICK_S = 1
+ACTION_GROUP = "action"
+BUSY_MESSAGE = "an action is still running; sign in once it finishes"
 
 LIVE_LABELS = {
     "none": "cached only (started without --key-fd)",
@@ -80,6 +80,27 @@ _BLOCKED_DURING_SIGNIN = frozenset(
      "move_up", "move_down"})
 
 COLUMNS = ("#", "Instance", "State", "Account", "5h", "Week")
+
+
+def guarded(label: str) -> Callable:
+    """Make an event-loop method turn any exception into the status `<label> failed (X)`.
+
+    An uncaught exception would end the app with a traceback that prints locals.
+    """
+
+    def wrap(method: Callable) -> Callable:
+        @functools.wraps(method)
+        def inner(self: "InstancesApp", *args: object, **kwargs: object) -> object:
+            try:
+                return method(self, *args, **kwargs)
+            except Exception as e:
+                try:
+                    self.status_text = f"{label} failed ({type(e).__name__})"
+                except Exception:
+                    pass
+                return None
+        return inner
+    return wrap
 
 
 # ---- cell text ------------------------------------------------------------------------
@@ -118,16 +139,11 @@ def account_cell(row: InstanceState) -> Text:
     return text
 
 
-def _is_live(usage: Usage, now: datetime) -> bool:
-    return (usage.source is Source.LIVE
-            and (now - usage.fetched_at).total_seconds() <= LIVE_STALE_AFTER_S)
-
-
 def usage_cell(pct: float | None, resets_at: datetime | None, usage: Usage | None,
                now: datetime) -> Text:
     text = format_cell(pct, resets_at, usage, now)
     style = LEVEL_STYLES.get(level(pct), "")
-    if usage is not None and pct is not None and not _is_live(usage, now):
+    if usage is not None and pct is not None and not is_live(usage, now):
         style = f"{style} dim".strip()
     return Text(text, style=style)
 
@@ -167,6 +183,29 @@ def signin_message(target: str, result: SigninResult) -> str:
     if result.warnings:
         message += f"; {'; '.join(result.warnings)}"
     return message
+
+
+def carry_restore(plan: SigninPlan, pending: list[str]) -> tuple[list[str], list[str]]:
+    """Add `pending` names left by an earlier sign-in to `plan.restore`, in launch order.
+
+    Returns (carried, dropped): the names added, and the names that cannot be
+    relaunched (no launcher, a duplicate or an old one-shot launcher). The target is
+    never added.
+    """
+    rows = {r.name: r for r in plan.snapshot.rows}
+    carried: list[str] = []
+    dropped: list[str] = []
+    for name in dict.fromkeys(pending):
+        if name == plan.target or name in plan.restore:
+            continue
+        row = rows.get(name)
+        if row is None or row.is_duplicate or not row.launcher.is_watchdog:
+            dropped.append(name)
+        else:
+            carried.append(name)
+    if carried:
+        plan.restore = sorted(plan.restore + carried, key=lambda n: rows[n].position)
+    return carried, dropped
 
 
 # ---- messages from the sign-in thread -------------------------------------------------
@@ -405,23 +444,28 @@ class InstancesApp(App):
         except Exception as e:
             self.status_text = f"refresh failed ({type(e).__name__})"
             return False
-        self.snapshot = snapshot
-        self._refreshed_at = snapshot.taken_at
-        if not self.backend.cached_only:
-            self.scheduler.set_candidates(
-                [r.name for r in snapshot.rows
-                 if r.session in (SessionState.SIGNED_IN, SessionState.REJECTED)])
-        error = self.backend.expected_error
-        if error is not None and error != self._shown_expected_error:
-            self.status_text = error
-        self._shown_expected_error = error
-        self._update_header()
-        if self.main_screen.ready:
-            self.main_screen.show_snapshot(snapshot)
+        try:
+            self.snapshot = snapshot
+            self._refreshed_at = snapshot.taken_at
+            if not self.backend.cached_only:
+                self.scheduler.set_candidates(
+                    [r.name for r in snapshot.rows
+                     if r.session in (SessionState.SIGNED_IN, SessionState.REJECTED)])
+            error = self.backend.expected_error
+            if error is not None and error != self._shown_expected_error:
+                self.status_text = error
+            self._shown_expected_error = error
+            self._update_header()
+            if self.main_screen.ready:
+                self.main_screen.show_snapshot(snapshot)
+        except Exception as e:
+            self.status_text = f"display failed ({type(e).__name__})"
+            return False
         return True
 
     # -- live lookups --
 
+    @guarded("live lookup")
     def live_tick(self) -> None:
         """Start the next due live lookup, if any; runs on the event loop."""
         if self.backend.cached_only:
@@ -443,6 +487,7 @@ class InstancesApp(App):
 
         self.run_worker(body, thread=True, group="live", exit_on_error=False)
 
+    @guarded("live lookup")
     def _live_finished(self, name: str, ok: bool) -> None:
         self.scheduler.finish(name, ok)
         self.refresh_state()
@@ -468,8 +513,13 @@ class InstancesApp(App):
                 message = f"{label} failed ({type(e).__name__})"
             self._from_thread(self._action_done, message)
 
-        self.run_worker(work, thread=True, group="action", exit_on_error=False)
+        self.run_worker(work, thread=True, group=ACTION_GROUP, exit_on_error=False)
 
+    def actions_running(self) -> bool:
+        """True while any launch, quit, re-arm, front or relaunch worker is unfinished."""
+        return any(w.group == ACTION_GROUP and not w.is_finished for w in self.workers)
+
+    @guarded("refresh")
     def _action_done(self, message: str) -> None:
         self.status_text = message
         if not self.refresh_state():
@@ -477,6 +527,7 @@ class InstancesApp(App):
 
     # -- actions --
 
+    @guarded("front")
     def do_front(self) -> None:
         row = self._current_row()
         if row is None:
@@ -499,6 +550,7 @@ class InstancesApp(App):
 
         self._run_action("front", body)
 
+    @guarded("launch")
     def do_launch(self) -> None:
         row = self._current_row()
         if row is None:
@@ -506,6 +558,7 @@ class InstancesApp(App):
         name = row.name
         self._run_action("launch", lambda: f"{name}: {self.backend.launch(name).message}")
 
+    @guarded("re-arm")
     def do_rearm(self) -> None:
         row = self._current_row()
         if row is None:
@@ -518,9 +571,11 @@ class InstancesApp(App):
 
         self._run_action("re-arm", body)
 
+    @guarded("launch all")
     def do_launch_all(self) -> None:
         self._run_action("launch all", lambda: launch_all_message(self.backend.launch_all()))
 
+    @guarded("quit")
     def do_quit(self) -> None:
         row = self._current_row()
         if row is None:
@@ -541,6 +596,7 @@ class InstancesApp(App):
         self.push_screen(ConfirmScreen(f"Quit {name}? Its watchdog is stopped first."),
                          answered)
 
+    @guarded("refresh usage")
     def do_refresh_usage(self) -> None:
         row = self._current_row()
         if row is None:
@@ -555,6 +611,7 @@ class InstancesApp(App):
         self.status_text = f"{row.name}: live lookup queued"
         self.live_tick()
 
+    @guarded("details")
     def do_details(self) -> None:
         row = self._current_row()
         if row is None:
@@ -562,6 +619,7 @@ class InstancesApp(App):
         self.push_screen(DetailsScreen(
             details_text(row, self.backend.support_dir, self.backend.log_dir)))
 
+    @guarded("open log")
     def do_open_log(self) -> None:
         row = self._current_row()
         if row is None:
@@ -576,6 +634,7 @@ class InstancesApp(App):
         except Exception as e:
             self.status_text = f"could not open the log ({type(e).__name__})"
 
+    @guarded("mark expected")
     def do_mark_expected(self) -> None:
         row = self._current_row()
         if row is None:
@@ -586,6 +645,7 @@ class InstancesApp(App):
         who = row.email or short_id(row.account)
         self._confirm_expected(row.name, who)
 
+    @guarded("mark expected")
     def _confirm_expected(self, name: str, who: str) -> None:
         def answered(yes: bool | None) -> None:
             if yes:
@@ -598,6 +658,7 @@ class InstancesApp(App):
         self.push_screen(
             ConfirmScreen(f"Record {who} as the expected account for {name}?"), answered)
 
+    @guarded("move")
     def do_move(self, delta: int) -> None:
         name = self.main_screen.current_name()
         if name is None:
@@ -612,6 +673,7 @@ class InstancesApp(App):
 
     # -- restore offer --
 
+    @guarded("restore check")
     def _offer_restore(self) -> None:
         try:
             names = self.backend.pending_restore()
@@ -624,6 +686,7 @@ class InstancesApp(App):
         if names:
             self.push_screen(RestoreOfferScreen(names), lambda yes: self._restore(names, yes))
 
+    @guarded("relaunch")
     def _restore(self, names: list[str], yes: bool | None) -> None:
         if not yes:
             self.status_text = "restore list kept; offered again next start"
@@ -632,32 +695,47 @@ class InstancesApp(App):
         path = backend.config_dir / RESTORE_FILE
 
         def body() -> str:
-            failed: list[str] = []
-            reasons: list[str] = []
-            gap_due = False
-            for name in names:
-                if gap_due:
-                    backend.sleep(LAUNCH_GAP_S)
-                result = backend.launch(name)
-                gap_due = result.ok
-                if not result.ok:
-                    failed.append(name)
-                    reasons.append(f"{name} ({result.message})")
+            # Running rows come back as skips: nothing is left to relaunch for them.
+            results = backend.launch_all(names)
+            seen = {name for name, _ in results}
+            launched = [name for name, r in results if r.ok]
+            running = [name for name, r in results
+                       if not r.ok and r.message in _LAUNCH_ALL_SKIPS]
+            failed = [(name, r.message) for name, r in results
+                      if not r.ok and r.message not in _LAUNCH_ALL_SKIPS]
+            gone = [name for name in names if name not in seen]
+            parts = []
+            if launched:
+                parts.append(f"relaunched {', '.join(launched)}")
+            if running:
+                parts.append(f"already running: {', '.join(running)}")
+            if gone:
+                parts.append(f"no launcher, dropped: {', '.join(gone)}")
             if failed:
-                write_restore(path, failed)
-                return f"relaunch: not launched: {', '.join(reasons)}; kept for next start"
-            clear_restore(path)
-            return f"relaunched {', '.join(names)}"
+                reasons = ", ".join(f"{name} ({why})" for name, why in failed)
+                parts.append(f"not launched: {reasons}; kept for next start")
+            try:
+                if failed:
+                    write_restore(path, [name for name, _ in failed])
+                else:
+                    clear_restore(path)
+            except OSError as e:
+                parts.append(f"could not update the restore file ({type(e).__name__})")
+            return "relaunch: " + ("; ".join(parts) if parts else "nothing to do")
 
         self._run_action("relaunch", body)
 
     # -- sign-in --
 
+    @guarded("sign in")
     def do_signin(self) -> None:
         row = self._current_row()
         if row is None or self.signin_active:
             return
         name = row.name
+        if self.actions_running():
+            self.status_text = BUSY_MESSAGE
+            return
         try:
             plan = plan_signin(self.backend.snapshot(), name)
         except SigninRefused as e:
@@ -666,13 +744,32 @@ class InstancesApp(App):
         except Exception as e:
             self.status_text = f"sign in failed ({type(e).__name__})"
             return
+        try:
+            owner, pending = read_restore(self.backend.config_dir / RESTORE_FILE)
+        except (OSError, UnicodeDecodeError) as e:
+            self.status_text = (
+                f"could not read the restore file ({type(e).__name__}); not signing in")
+            return
+        if (pending and owner is not None and owner != os.getpid()
+                and self.backend.actions.is_alive(owner)):
+            self.status_text = f"another sign-in (pid {owner}) is running; try again after it"
+            return
+        # The flow rewrites the restore file, so a list left by an earlier sign-in is
+        # carried into this one instead of being lost.
+        carried, dropped = carry_restore(plan, pending)
         lines = [f"Sign in {name}?"]
         if plan.quit_rows:
-            lines.append(f"Will be quit and relaunched after: {', '.join(plan.quit_rows)}")
+            lines.append(f"Will be quit: {', '.join(plan.quit_rows)}")
         if plan.watchdog_rows:
             lines.append(f"Watchdogs stopped: {', '.join(plan.watchdog_rows)}")
         if plan.not_restorable:
             lines.append("Will be quit and not relaunched: " + ", ".join(plan.not_restorable))
+        if plan.restore:
+            lines.append(f"Relaunched afterwards: {', '.join(plan.restore)}")
+        if carried:
+            lines.append("(includes, left by an earlier sign-in: " + ", ".join(carried) + ")")
+        if dropped:
+            lines.append("Dropped from the earlier relaunch list: " + ", ".join(dropped))
         if len(lines) == 1:
             lines.append("Nothing else is running.")
 
@@ -682,8 +779,12 @@ class InstancesApp(App):
 
         self.push_screen(ConfirmScreen("\n".join(lines)), answered)
 
+    @guarded("sign in")
     def _start_signin(self, plan: SigninPlan) -> None:
         if self.signin_active:
+            return
+        if self.actions_running():
+            self.status_text = BUSY_MESSAGE
             return
         cancel = threading.Event()
         self.signin_cancel = cancel
@@ -714,6 +815,7 @@ class InstancesApp(App):
         self.signin_thread = threading.Thread(target=body, name="signin", daemon=False)
         self.signin_thread.start()
 
+    @guarded("sign-in display")
     def on_signin_progress(self, message: SigninProgress) -> None:
         screen = self._signin_screen
         if screen is None:
@@ -725,25 +827,38 @@ class InstancesApp(App):
 
     def on_signin_finished(self, message: SigninFinished) -> None:
         self.signin_active = False
-        if self._signin_screen is not None and self.screen is self._signin_screen:
-            self.pop_screen()
-        self._signin_screen = None
+        try:
+            self._close_signin_screen()
+        except Exception:
+            pass
         if self.exit_after_signin:
             self.exit()
             return
-        result = message.result
-        self.status_text = signin_message(message.target, result)
+        self._after_signin(message.target, message.result)
+
+    def _close_signin_screen(self) -> None:
+        """Remove the sign-in screen even when another screen was pushed above it."""
+        screen, self._signin_screen = self._signin_screen, None
+        if screen is None or screen not in self.screen_stack:
+            return
+        while self.screen_stack[-1] is not screen:
+            self.pop_screen()
+        self.pop_screen()
+
+    @guarded("sign-in result")
+    def _after_signin(self, target: str, result: SigninResult) -> None:
+        self.status_text = signin_message(target, result)
         self.refresh_state()
         if result.ok and result.new_account is not None:
             who = short_id(result.new_account)
             if self.snapshot is not None:
                 try:
-                    row = self.snapshot.row(message.target)
+                    row = self.snapshot.row(target)
                     if row.account == result.new_account and row.email:
                         who = row.email
                 except KeyError:
                     pass
-            self._confirm_expected(message.target, who)
+            self._confirm_expected(target, who)
 
     def finish_signin(self, timeout: float | None = None) -> None:
         """Cancel a running sign-in and wait for its restore; a no-op when none ran."""

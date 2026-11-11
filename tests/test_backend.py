@@ -294,6 +294,12 @@ def test_launch_all_goes_through_pending_check(world: World, backend: Backend) -
     assert len(world.fake.launched) == 1
 
 
+def test_launch_all_limited_to_names_keeps_launch_order(world: World, backend: Backend) -> None:
+    results = backend.launch_all(["Claude I", "Claude C", "Nope"])
+    assert [name for name, _ in results] == ["Claude C", "Claude I"]
+    assert world.fake.launched == [world.apps / "Claude I.app"]
+
+
 # ---- other actions -----------------------------------------------------------------
 
 def test_quit_wraps_quit_instance(world: World, backend: Backend) -> None:

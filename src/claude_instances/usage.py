@@ -250,7 +250,8 @@ def format_until(delta: timedelta) -> str:
     return f"{seconds // 86_400}d"
 
 
-def _is_live(usage: Usage, now: datetime) -> bool:
+def is_live(usage: Usage, now: datetime) -> bool:
+    """True while `usage` is from a live lookup no older than `LIVE_STALE_AFTER_S`."""
     return (
         usage.source is Source.LIVE
         and (now - usage.fetched_at).total_seconds() <= LIVE_STALE_AFTER_S
@@ -262,6 +263,6 @@ def format_cell(pct: float | None, resets_at: datetime | None, usage: Usage | No
     if pct is None or usage is None:
         return NO_DATA
     shown = f"{math.floor(pct)}%"
-    if _is_live(usage, now):
+    if is_live(usage, now):
         return shown if resets_at is None else f"{shown}  {format_until(resets_at - now)}"
     return f"{shown} · {format_age(now - usage.fetched_at)} old"
