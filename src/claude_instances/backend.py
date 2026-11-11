@@ -8,6 +8,7 @@ details (email, org, account UUID) never appear in a message or error string her
 
 import threading
 import time
+from dataclasses import replace
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -208,9 +209,16 @@ class Backend:
             return ActionResult(False, f"no launcher named {name}")
         return self._launch_launcher(launcher)
 
-    def launch_all(self) -> list[tuple[str, ActionResult]]:
-        """Launch every closed row; skipped rows come back as not-ok entries."""
-        return act.launch_all(self.snapshot(), self.actions, self.default_data_dir,
+    def launch_all(self, names: list[str] | None = None) -> list[tuple[str, ActionResult]]:
+        """Launch every closed row in launch order, or only those in `names` when given.
+
+        Skipped rows come back as not-ok entries; names with no launcher are left out.
+        """
+        snapshot = self.snapshot()
+        if names is not None:
+            wanted = set(names)
+            snapshot = replace(snapshot, rows=[r for r in snapshot.rows if r.name in wanted])
+        return act.launch_all(snapshot, self.actions, self.default_data_dir,
                               sleep=self.sleep, launch_one=self._launch_launcher)
 
     # ---- other actions ------------------------------------------------------------

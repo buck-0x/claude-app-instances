@@ -5,6 +5,7 @@ goes to `FakeSystemActions`, and sign-ins use `BlockingFlow`.
 """
 
 import json
+import os
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from helpers import FakeSystemActions, make_data_dir, make_launcher_app
 from textual.widgets import DataTable
 
 from claude_instances.actions import AUTOMATION_HELP, ActionResult
+import claude_instances.app as app_module
 from claude_instances.app import InstancesApp
 from claude_instances.backend import DECRYPT_ERROR, Backend
 from claude_instances.paths import RESTORE_FILE
@@ -23,8 +25,9 @@ from claude_instances.screens import (
     ConfirmScreen,
     DetailsScreen,
     RestoreOfferScreen,
+    SigninScreen,
 )
-from claude_instances.signin import SigninResult, write_restore
+from claude_instances.signin import SigninResult, read_restore, write_restore
 from claude_instances.usage import LookupResult, Source, Usage
 
 A = "11111111-2222-4333-8444-555555555555"
@@ -359,8 +362,16 @@ async def test_action_keys_blocked_during_signin(backend, fake):
         await pilot.press("l")
         await pilot.pause()
         assert fake.launched == launched_before
+        # The sign-in modal swallows keys anyway, so check the screen's gate directly.
+        screen = pilot.app.main_screen
+        for action in ("front", "launch", "quit_instance", "rearm", "launch_all", "signin",
+                       "mark_expected", "move_up", "move_down"):
+            assert screen.check_action(action, ()) is False, action
+        assert screen.check_action("details", ()) is True
         flow.release()
         pilot.app.finish_signin()
+        await pilot.pause()
+        assert screen.check_action("launch", ()) is True
 
 
 async def test_exit_during_signin_restores_first(backend):
@@ -416,3 +427,132 @@ async def test_signin_offers_expected_account(backend, world):
         await pilot.pause()
         expected = json.loads((world.cfg / "expected-accounts.json").read_text())
         assert expected == {"Claude I": B}
+
+
+async def test_signin_screen_removed_even_under_another_screen(backend):
+    flow = BlockingFlow()
+    backend.make_signin_flow = lambda on_phase: flow
+    async with InstancesApp(backend).run_test() as pilot:
+        await start_signin(pilot, "Claude I")
+        pilot.app.push_screen(ConfirmScreen("something on top"))
+        await pilot.pause()
+        flow.release()
+        pilot.app.signin_thread.join(5)
+        await pilot.pause()
+        await pilot.pause()
+        assert not any(isinstance(s, SigninScreen) for s in pilot.app.screen_stack)
+        assert pilot.app.screen is pilot.app.main_screen and not pilot.app.signin_active
+
+
+async def test_signin_refused_while_an_action_runs(backend, fake, world):
+    gate = threading.Event()
+    fake.on_launch = lambda app_path: gate.wait(5)
+    flow = BlockingFlow()
+    backend.make_signin_flow = lambda on_phase: flow
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.press("a")  # launch all blocks inside launching Claude I
+        await pilot.pause()
+        select(pilot, "Claude C")
+        await pilot.press("s")
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, ConfirmScreen)
+        assert "still running" in pilot.app.status_text
+        assert pilot.app.signin_thread is None
+        gate.set()
+        await finish_workers(pilot)
+        assert fake.launched == [world.app_path("Claude I")]
+
+
+async def test_signin_carries_a_pending_restore_list(backend, world):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=os.getpid())
+    flow = BlockingFlow()
+    backend.make_signin_flow = lambda on_phase: flow
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        if isinstance(pilot.app.screen, RestoreOfferScreen):
+            await pilot.press("n")  # declined: the list stays pending
+            await pilot.pause()
+        select(pilot, "Claude C")
+        await pilot.press("s")
+        await pilot.pause()
+        assert "Claude I" in pilot.app.screen.question
+        await pilot.press("y")
+        await pilot.pause()
+        assert flow.started.wait(5)
+        assert flow.plan.restore == ["Claude I"]
+        flow.release()
+        pilot.app.finish_signin(timeout=5)
+
+
+async def test_signin_refused_while_another_tui_owns_the_restore_file(backend, world, fake):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=4242)
+    fake.alive.add(4242)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, RestoreOfferScreen)
+        select(pilot, "Claude C")
+        await pilot.press("s")
+        await pilot.pause()
+        assert not isinstance(pilot.app.screen, ConfirmScreen)
+        assert "another sign-in (pid 4242)" in pilot.app.status_text
+
+
+async def test_restore_counts_running_instances_as_restored(backend, world, fake):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude C", "Claude I"], owner_pid=99999)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("y")
+        await finish_workers(pilot)
+        assert fake.launched == [world.app_path("Claude I")]
+        assert not (world.cfg / RESTORE_FILE).exists()
+        assert "already running: Claude C" in pilot.app.status_text
+
+
+async def test_restore_keeps_only_refused_names(backend, world, fake):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=99999)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        backend.pending_launches["Claude I"] = backend.monotonic()  # a launch just requested
+        await pilot.press("y")
+        await finish_workers(pilot)
+        assert fake.launched == []
+        assert read_restore(world.cfg / RESTORE_FILE)[1] == ["Claude I"]
+        assert "kept for next start" in pilot.app.status_text
+
+
+async def test_restore_reports_relaunches_when_the_file_cannot_be_updated(
+        backend, world, fake, monkeypatch):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=99999)
+
+    def fail(path):
+        raise PermissionError("read-only")
+    monkeypatch.setattr(app_module, "clear_restore", fail)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("y")
+        await finish_workers(pilot)
+        status = pilot.app.status_text
+        assert "relaunched Claude I" in status
+        assert "could not update the restore file (PermissionError)" in status
+
+
+async def test_display_error_becomes_status(backend, monkeypatch):
+    async with InstancesApp(backend).run_test() as pilot:
+        def boom(row, now):
+            raise ValueError("bad cell")
+        monkeypatch.setattr(app_module, "row_cells", boom)
+        assert pilot.app.refresh_state() is False
+        assert pilot.app.status_text == "display failed (ValueError)"
+        await pilot.pause()
+        assert pilot.app.is_running
+
+
+async def test_action_handler_error_becomes_status(backend, monkeypatch):
+    async with InstancesApp(backend).run_test() as pilot:
+        def boom(*args):
+            raise KeyError("x")
+        monkeypatch.setattr(app_module, "details_text", boom)
+        select(pilot, "Claude C")
+        await pilot.press("d")
+        await pilot.pause()
+        assert pilot.app.status_text == "details failed (KeyError)" and pilot.app.is_running
