@@ -18,6 +18,7 @@
 #   new-claude "Claude Fulcra" --apps ~/Applications     # custom install dir
 #   new-claude --list                                    # list launchers created
 #   new-claude --reopen-all                              # reopen instances that aren't running
+#   new-claude --launch-all                              # launch all instances in order.txt order
 #
 # Re-running with the same name safely rebuilds that launcher.
 
@@ -36,16 +37,19 @@ DATA_DIR_NAME=""
 APPS_DIR="/Applications"
 DO_LIST=0
 DO_REOPEN=0
+DO_LAUNCH_ALL=0
+APPS_GIVEN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --list)       DO_LIST=1; shift ;;
     --reopen-all) DO_REOPEN=1; shift ;;
+    --launch-all) DO_LAUNCH_ALL=1; shift ;;
     --dir)        DATA_DIR_NAME="$2"; shift 2 ;;
-    --apps)       APPS_DIR="${2/#\~/$HOME}"; shift 2 ;;
+    --apps)       APPS_DIR="${2/#\~/$HOME}"; APPS_GIVEN=1; shift 2 ;;
     --claude-app) CLAUDE_APP="${2/#\~/$HOME}"; shift 2 ;;  # test hook
     -h|--help)
-      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*)     echo "Unknown option: $1" >&2; exit 1 ;;
     *)      if [ -z "$DISPLAY_NAME" ]; then DISPLAY_NAME="$1"; fi; shift ;;
@@ -172,9 +176,73 @@ if [ "$DO_REOPEN" -eq 1 ]; then
   exit 0
 fi
 
+# ---- --launch-all mode -------------------------------------------------------
+# Launch every instance that is not running, in the order the instances TUI
+# saved (order.txt, one display name per line), then the unlisted ones in
+# codepoint order (LC_ALL=C sort, as Python's sorted() does), with a gap
+# between launches. Scans /Applications and ~/Applications unless --apps given.
+if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
+  LAUNCH_GAP=3
+  ORDER_FILE="${CLAUDE_INSTANCES_CONFIG_DIR:-$HOME/.config/claude-instances}/order.txt"
+  if [ "$APPS_GIVEN" -eq 1 ]; then
+    scan_dirs=("$APPS_DIR")
+  else
+    scan_dirs=("/Applications" "$HOME/Applications")
+  fi
+  typeset -A APP_OF SEEN
+  for dir in "${scan_dirs[@]}"; do
+    for plist in "$dir"/*.app/Contents/Info.plist(N); do
+      [ -f "$plist" ] || continue
+      id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null || true)
+      case "$id" in
+        local.launcher.*)
+          name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$plist" 2>/dev/null || true)
+          if [ -n "$name" ] && [ -z "${APP_OF[$name]}" ]; then
+            APP_OF[$name]="${plist%/Contents/Info.plist}"
+          fi ;;
+      esac
+    done
+  done
+  ordered=()
+  if [ -f "$ORDER_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ] && [ -n "${APP_OF[$line]}" ] && [ -z "${SEEN[$line]}" ]; then
+        ordered+=("$line"); SEEN[$line]=1
+      fi
+    done < "$ORDER_FILE"
+  fi
+  for name in "${(@f)$(for n in "${(@k)APP_OF}"; do [ -n "${SEEN[$n]}" ] || print -r -- "$n"; done | LC_ALL=C sort)}"; do
+    [ -n "$name" ] && ordered+=("$name")
+  done
+  echo "Launching Claude instances:"
+  launched=0
+  for name in "${ordered[@]}"; do
+    app="${APP_OF[$name]}"
+    datadir=$(launcher_data_dir "$app")
+    capp=$(launcher_claude_app "$app")
+    [ -n "$capp" ] || capp="$CLAUDE_APP"
+    if [ -z "$datadir" ]; then
+      echo "   • $name: could not determine data dir; skipping"
+      continue
+    fi
+    if instance_running_for "$capp" "$datadir"; then
+      echo "   • $name: already running"
+      continue
+    fi
+    if [ "$launched" -gt 0 ]; then sleep "$LAUNCH_GAP"; fi
+    echo "   • $name: launching"
+    open -n "$app"
+    launched=$((launched + 1))
+  done
+  if [ "${#ordered[@]}" -eq 0 ]; then
+    echo "   (no launchers found)"
+  fi
+  exit 0
+fi
+
 if [ -z "$DISPLAY_NAME" ]; then
   echo "Usage: new-claude \"Claude Name\" [--dir DataFolderName] [--apps /install/path]" >&2
-  echo "       new-claude --list | --reopen-all" >&2
+  echo "       new-claude --list | --reopen-all | --launch-all [--apps /install/path]" >&2
   exit 1
 fi
 
