@@ -242,24 +242,17 @@ Store the key in av once:
 security find-generic-password -s "Claude Safe Storage" -a "Claude Key" -w | av save --stdin CLAUDE_SAFE_STORAGE
 ```
 
-Allow the TUI to receive it. Depending on how av treats the pipx wrapper
-(a launcher script behind a symlink), one of these forms works:
-
-```sh
-av bless ~/.local/bin/claude-instances
-# if av refuses the launcher or symlink:
-av bless --endorse-launcher ~/.local/bin/claude-instances
-```
-
-Run it:
+Run it with the key on file descriptor 3:
 
 ```sh
 av inject --mode=fd +CLAUDE_SAFE_STORAGE:3 -- claude-instances --key-fd 3
 ```
 
+No `av bless` step is needed. Each run asks for your approval in Automic Vault
+before the key is handed over.
+
 Without `--key-fd` the TUI runs in cached-only mode: it shows the last saved
-numbers with their age and says so in the header. Re-bless after every
-`pipx install` or reinstall, because the wrapper is rewritten. The usage API
+numbers with their age and says so in the header. The usage API
 is unofficial and may change without notice.
 
 ### What is stored where
