@@ -2,7 +2,8 @@
 
 Used at a user-run checkpoint to confirm the endpoint paths and the usage payload's
 structure. Output holds only paths, statuses, kinds and a shape: field names, types
-and coarse numeric buckets. Ids used as dict keys are redacted too.
+and coarse numeric buckets. Every dict key that is not a plain identifier is
+redacted too, so ids or names embedded in keys never print.
 """
 
 import json
@@ -26,6 +27,7 @@ from claude_instances.secret import read_secret_fd
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 _DIGITS_KEY = re.compile(r"^\d{6,}$")
+_IDENTIFIER_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _bucket(n: int | float) -> str:
@@ -63,13 +65,28 @@ def _shape_str(s: str) -> str:
 
 
 def redact_key(k: str) -> str:
+    """A plain identifier key unchanged; any other key replaced by a fixed label."""
     if _UUID.match(k):
         return "<uuid-key>"
     if "@" in k:
         return "<email-key>"
     if _DIGITS_KEY.match(k):
         return "<digits-key>"
+    if not _IDENTIFIER_KEY.match(k):
+        return "<other-key>"
     return k
+
+
+def _shape_dict(value: dict) -> dict:
+    """Shape each value under its redacted key; keys that redact to one label merge
+    into a single entry, labelled with their count, holding the first value's shape."""
+    groups: dict[str, list[Any]] = {}
+    for k, v in value.items():
+        groups.setdefault(redact_key(str(k)), []).append(v)
+    return {
+        (label if len(vs) == 1 else f"{label} ({len(vs)})"): shape(vs[0])
+        for label, vs in groups.items()
+    }
 
 
 def shape(value: Any) -> Any:
@@ -87,7 +104,7 @@ def shape(value: Any) -> Any:
     if isinstance(value, list):
         return {"list": shape(value[0]) if value else None, "len": len(value)}
     if isinstance(value, dict):
-        return {redact_key(str(k)): shape(v) for k, v in value.items()}
+        return _shape_dict(value)
     return type(value).__name__
 
 
