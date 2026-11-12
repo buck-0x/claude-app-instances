@@ -43,6 +43,32 @@ def test_shape_redacts_id_keys():
     assert set(s) == {"<uuid-key>", "<email-key>", "<digits-key>", "five_hour"}
 
 
+def test_shape_redacts_uuid_prefixed_key():
+    s = shape({f"{USER_UUID}:some_tool-abc123": 1, "five_hour": 2})
+    assert s == {"<other-key>": "int:(0,1]", "five_hour": "int:(1,100]"}
+
+
+def test_shape_redacts_key_with_spaces_and_colons():
+    s = shape({"local:Made Up Server:tool": True})
+    assert s == {"<other-key>": "bool"}
+
+
+def test_shape_redacts_empty_key():
+    assert shape({"": None}) == {"<other-key>": "null"}
+
+
+def test_shape_counts_colliding_redacted_keys():
+    s = shape({"a:b": 1, "c d": "x", "": None, "plain_key": 0,
+               USER_UUID: 1, ORG_B: 2})
+    assert s == {"<other-key> (3)": "int:(0,1]", "plain_key": "int:0",
+                 "<uuid-key> (2)": "int:(0,1]"}
+
+
+def test_shape_keeps_identifier_keys():
+    s = shape({"_private": 1, "seven_day2": 2, "CamelCase": 3})
+    assert set(s) == {"_private", "seven_day2", "CamelCase"}
+
+
 def test_shape_digit_string_is_not_a_date():
     assert shape("20261106") == "str:len=8"
 
