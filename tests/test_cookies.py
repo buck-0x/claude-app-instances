@@ -102,12 +102,16 @@ def test_bad_meta_version_is_unknown_not_raised(tmp_path):
     con.execute("UPDATE meta SET value = 'x' WHERE key = 'version'")
     con.commit()
     con.close()
-    assert read_claude_cookies(tmp_path, sleep=lambda s: None) is None
+    slept = []
+    assert read_claude_cookies(tmp_path, sleep=slept.append) is None
+    assert slept == []  # a value that will not change is not retried
 
 
 def test_out_of_range_times_do_not_raise(tmp_path):
     huge = 2**62
     make_cookie_db(tmp_path / "Cookies", [(".claude.ai", "sessionKey", b"v10xx", huge, 1)])
-    store = read_claude_cookies(tmp_path, sleep=lambda s: None)
+    slept = []
+    store = read_claude_cookies(tmp_path, sleep=slept.append)
+    assert slept == []
     # A row whose expiry is past datetime's range is unusable: never raised.
     assert session_state(store, NOW) == (SessionState.UNKNOWN, None)

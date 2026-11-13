@@ -45,6 +45,10 @@ class SessionState(Enum):
     REJECTED = "rejected"
 
 
+class _UnusableValue(Exception):
+    """The DB was read but holds a value that a retry would read again unchanged."""
+
+
 def chromium_time(us: int) -> datetime | None:
     """Convert Chromium microseconds-since-1601 to an aware UTC datetime; 0 means none."""
     if us == 0:
@@ -74,7 +78,7 @@ def _read(path: Path) -> CookieStore:
                 chromium_time(row.expires_utc)
                 chromium_time(row.creation_utc)
         except (ValueError, TypeError, OverflowError):
-            raise sqlite3.DatabaseError("Cookies DB holds an unusable value") from None
+            raise _UnusableValue() from None
         return CookieStore(rows=rows, db_version=version)
     finally:
         con.close()
@@ -93,7 +97,9 @@ def read_claude_cookies(
         try:
             return _read(path)
         except sqlite3.DatabaseError:
-            continue
+            continue  # often a write in progress: worth another try
+        except _UnusableValue:
+            return None
     return None
 
 

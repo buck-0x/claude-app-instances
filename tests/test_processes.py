@@ -134,3 +134,13 @@ def test_log_says_update_wait(tmp_path):
                 "watchdog (pid 9) exiting"):
         log.write_text(f"{UPDATE_PENDING}\n2026-11-06 12:40:00 {end}\n")
         assert not log_says_update_wait(log), end
+
+
+def test_launcher_still_logs_the_update_wait_wording():
+    from claude_instances.processes import _UPDATE_WAIT_NOISE
+    script = (Path(__file__).parent.parent / "bin/new-claude.sh").read_text()
+    for text in ("update pending (", "but not installed", *_UPDATE_WAIT_NOISE):
+        assert text in script, text
+    # zsh --launch-all filters with the same strings.
+    for text in _UPDATE_WAIT_NOISE:
+        assert f"-e '{text}'" in script, text

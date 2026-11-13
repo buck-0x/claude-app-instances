@@ -211,9 +211,12 @@ class SigninFlow:
         on_phase: Callable[[SigninPhase, str], None] = lambda p, m: None,
         log_dir: Path | None = None,
         launch_one: Callable[[Launcher], ActionResult] | None = None,
+        restore_one: Callable[[Launcher, bool], ActionResult] | None = None,
     ) -> None:
         """`launch_one` opens the target's launcher; the backend passes its own, which
-        refuses a second open within its pending-launch window. Default `guarded_launch`."""
+        refuses a second open within its pending-launch window. `restore_one(launcher,
+        rearm)` relaunches a restore-list row; the backend's records the launch as
+        pending. Both default to `guarded_launch`."""
         self.actions = actions
         self.refresh = refresh
         self.restore_path = config_dir / RESTORE_FILE
@@ -222,9 +225,10 @@ class SigninFlow:
         self.on_phase = on_phase
         self.log_dir = paths.log_dir() if log_dir is None else log_dir
         self.launch_one = launch_one if launch_one is not None else self._guarded_launch
+        self.restore_one = restore_one if restore_one is not None else self._guarded_launch
 
-    def _guarded_launch(self, launcher: Launcher) -> ActionResult:
-        return guarded_launch(launcher, self.actions, self.default_data_dir)
+    def _guarded_launch(self, launcher: Launcher, rearm: bool = False) -> ActionResult:
+        return guarded_launch(launcher, self.actions, self.default_data_dir, rearm=rearm)
 
     def run(self, plan: SigninPlan, cancelled: threading.Event) -> SigninResult:
         try:
@@ -468,8 +472,7 @@ class _Run:
                 self.flow.sleep(LAUNCH_GAP_S)
             try:
                 rearm = self._still_running(launcher)
-                result = guarded_launch(launcher, self.actions, self.flow.default_data_dir,
-                                        rearm=rearm)
+                result = self.flow.restore_one(launcher, rearm)
             except Exception as e:
                 failed.append((name, f"relaunch failed ({type(e).__name__})"))
                 gap_due = False
