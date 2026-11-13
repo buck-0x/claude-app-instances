@@ -1,0 +1,116 @@
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+
+from claude_instances.httpclient import HttpResult, UrllibHttpClient
+from claude_instances.secret import Secret
+
+_ROUTES = {
+    "/ok": (200, "application/json", json.dumps({"a": 1}).encode()),
+    "/unauth": (401, "application/json", json.dumps({"error": "x"}).encode()),
+    "/challenge": (403, "text/html; charset=utf-8", b"<html>"),
+    "/boom": (500, "text/plain", b"boom"),
+    "/badjson": (502, "application/json", b"{not json"),
+}
+
+
+class _Server(str):
+    """The server's base URL, carrying the request headers it has seen."""
+
+    seen: list[dict[str, str]]
+
+
+def _serve():
+    seen: list[dict[str, str]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(dict(self.headers))
+            if self.path.startswith("/redirect?to="):
+                self.send_response(302)
+                self.send_header("Location", self.path.split("=", 1)[1])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status, ctype, body = _ROUTES.get(self.path, (404, "text/plain", b""))
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = _Server(f"http://127.0.0.1:{httpd.server_address[1]}")
+    base.seen = seen
+    return base, httpd
+
+
+@pytest.fixture
+def server():
+    base, httpd = _serve()
+    try:
+        yield base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.fixture
+def other_server():
+    base, httpd = _serve()
+    try:
+        yield base
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_client_maps_http_errors(server):
+    c = UrllibHttpClient()
+    assert c.get(f"{server}/ok", {}) == HttpResult(200, {"a": 1}, "json")
+    r = c.get(f"{server}/unauth", {})
+    assert (r.status, r.kind, r.json) == (401, "json", {"error": "x"})
+    r = c.get(f"{server}/challenge", {})
+    assert (r.status, r.kind, r.json) == (403, "html", None)
+    r = c.get(f"{server}/boom", {})
+    assert (r.status, r.kind, r.json) == (500, "other", None)
+
+
+def test_client_connection_error_has_type_only():
+    r = UrllibHttpClient().get("http://127.0.0.1:9/x", {"sessionKey": Secret("sk-ant-secret")})
+    assert r.kind == "error" and r.error == "URLError" and "sk-ant" not in repr(r)
+    assert r.status == 0 and r.json is None
+
+
+def test_client_sends_cookie_and_user_agent(server):
+    UrllibHttpClient().get(
+        f"{server}/ok", {"sessionKey": Secret("v"), "lastActiveOrg": Secret("o")}
+    )
+    headers = server.seen[-1]
+    assert headers["Cookie"] == "sessionKey=v; lastActiveOrg=o"
+    assert headers["User-Agent"].startswith("Mozilla/5.0")
+    assert headers["Accept"] == "application/json"
+
+
+def test_client_does_not_follow_redirects(server, other_server):
+    r = UrllibHttpClient().get(
+        f"{server}/redirect?to={other_server}/ok", {"sessionKey": Secret("sk-ant-secret")}
+    )
+    assert (r.status, r.kind, r.json) == (302, "other", None)
+    assert other_server.seen == []
+    assert len(server.seen) == 1
+
+
+def test_client_malformed_json_keeps_status(server):
+    assert UrllibHttpClient().get(f"{server}/badjson", {}) == HttpResult(502, None, "other")
+
+
+def test_result_repr_hides_body():
+    assert "secret-body" not in repr(HttpResult(200, {"k": "secret-body"}, "json"))

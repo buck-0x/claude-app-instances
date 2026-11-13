@@ -18,6 +18,7 @@
 #   new-claude "Claude Fulcra" --apps ~/Applications     # custom install dir
 #   new-claude --list                                    # list launchers created
 #   new-claude --reopen-all                              # reopen instances that aren't running
+#   new-claude --launch-all                              # launch all instances in order.txt order
 #
 # Re-running with the same name safely rebuilds that launcher.
 
@@ -26,6 +27,9 @@ set -e
 # ---- config ------------------------------------------------------------------
 CLAUDE_APP="/Applications/Claude.app"
 SUPPORT_DIR="$HOME/Library/Application Support"
+# Claude's default data folder (used by a Claude started with no
+# --user-data-dir). CLAUDE_LAUNCHER_DEFAULT_DATA_DIR is a test hook.
+DEFAULT_DATA_DIR="${CLAUDE_LAUNCHER_DEFAULT_DATA_DIR:-$SUPPORT_DIR/Claude}"
 
 # ---- parse arguments ---------------------------------------------------------
 DISPLAY_NAME=""
@@ -33,16 +37,19 @@ DATA_DIR_NAME=""
 APPS_DIR="/Applications"
 DO_LIST=0
 DO_REOPEN=0
+DO_LAUNCH_ALL=0
+APPS_GIVEN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --list)       DO_LIST=1; shift ;;
     --reopen-all) DO_REOPEN=1; shift ;;
+    --launch-all) DO_LAUNCH_ALL=1; shift ;;
     --dir)        DATA_DIR_NAME="$2"; shift 2 ;;
-    --apps)       APPS_DIR="${2/#\~/$HOME}"; shift 2 ;;
+    --apps)       APPS_DIR="${2/#\~/$HOME}"; APPS_GIVEN=1; shift 2 ;;
     --claude-app) CLAUDE_APP="${2/#\~/$HOME}"; shift 2 ;;  # test hook
     -h|--help)
-      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*)     echo "Unknown option: $1" >&2; exit 1 ;;
     *)      if [ -z "$DISPLAY_NAME" ]; then DISPLAY_NAME="$1"; fi; shift ;;
@@ -72,16 +79,28 @@ launcher_claude_app() {
 }
 
 # Is an instance of $1 (app bundle) running with --user-data-dir=$2 exactly?
+# When $2 is the default data folder, an argless main process (the binary alone
+# or followed by flags only, no --user-data-dir= and no --type=) counts too.
+# Only the argless branch needs the binary at a word start; the
+# --user-data-dir branch keeps its substring match (a bundle under a symlinked
+# path, such as /tmp, shows in ps under its real /private/tmp path).
 # Search strings go through the environment, NOT awk -v: values on awk's own
 # command line can match awk's own ps entry (racy self-match).
 instance_running_for() {
-  local capp="$1" datadir="$2" exe=""
+  local capp="$1" datadir="$2" exe="" isdef=0
   exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$capp/Contents/Info.plist" 2>/dev/null) || exe=""
-  ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" awk '
-    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"] }
-    index($0, b) && (i = index($0, d)) {
-      r = substr($0, i + length(d), 1)
-      if (r == "" || r == " ") { f = 1; exit }
+  [ "$datadir" = "$DEFAULT_DATA_DIR" ] && isdef=1
+  ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" MDEF="$isdef" awk '
+    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
+    (j = index($0, b)) {
+      if (i = index($0, d)) {
+        r = substr($0, i + length(d), 1)
+        if (r == "" || r == " ") { f = 1; exit }
+      } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
+                 !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        a = substr($0, j + length(b), 2)
+        if (a == "" || a == " -") { f = 1; exit }
+      }
     }
     END { exit f ? 0 : 1 }'
 }
@@ -157,9 +176,96 @@ if [ "$DO_REOPEN" -eq 1 ]; then
   exit 0
 fi
 
+# ---- --launch-all mode -------------------------------------------------------
+# Launch every instance that is not running, in the order the instances TUI
+# saved (order.txt, one display name per line), then the unlisted ones in
+# codepoint order (LC_ALL=C sort, as Python's sorted() does), with a gap
+# between launches. Scans /Applications and ~/Applications unless --apps given.
+# An instance whose watchdog waits for a Claude update to install is skipped:
+# the watchdog reopens it once the update lands, and launching it now would
+# reopen it on the old version and keep blocking the install.
+if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
+  LAUNCH_GAP=3
+  ORDER_FILE="${CLAUDE_INSTANCES_CONFIG_DIR:-$HOME/.config/claude-instances}/order.txt"
+  WATCHDOG_LOG_DIR="$HOME/Library/Logs/claude-instances"
+  # True when $1's watchdog is alive (its lock names a process whose command line
+  # holds launcher app $2's script) and its log says it waits for an update
+  # install: the last of the last 200 lines, heartbeats and launcher notes
+  # aside, is the "update pending ... but not installed" line. Same rule as the
+  # instances TUI (processes.log_says_update_wait).
+  waiting_for_update() {
+    local name="$1" script="$2/Contents/MacOS/launcher" pid="" cmd=""
+    pid=$(readlink "$WATCHDOG_LOG_DIR/$name.lock" 2>/dev/null) || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+    case " $cmd " in *" $script "*) ;; *) return 1 ;; esac
+    tail -n 200 "$WATCHDOG_LOG_DIR/$name.log" 2>/dev/null \
+      | grep -v -e 'still waiting for update install' -e 'launcher opened while instance is down' \
+      | tail -n 1 | grep -q 'update pending (.*but not installed'
+  }
+  if [ "$APPS_GIVEN" -eq 1 ]; then
+    scan_dirs=("$APPS_DIR")
+  else
+    scan_dirs=("/Applications" "$HOME/Applications")
+  fi
+  typeset -A APP_OF SEEN
+  for dir in "${scan_dirs[@]}"; do
+    for plist in "$dir"/*.app/Contents/Info.plist(N); do
+      [ -f "$plist" ] || continue
+      id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null || true)
+      case "$id" in
+        local.launcher.*)
+          name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$plist" 2>/dev/null || true)
+          if [ -n "$name" ] && [ -z "${APP_OF[$name]}" ]; then
+            APP_OF[$name]="${plist%/Contents/Info.plist}"
+          fi ;;
+      esac
+    done
+  done
+  ordered=()
+  if [ -f "$ORDER_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ] && [ -n "${APP_OF[$line]}" ] && [ -z "${SEEN[$line]}" ]; then
+        ordered+=("$line"); SEEN[$line]=1
+      fi
+    done < "$ORDER_FILE"
+  fi
+  for name in "${(@f)$(for n in "${(@k)APP_OF}"; do [ -n "${SEEN[$n]}" ] || print -r -- "$n"; done | LC_ALL=C sort)}"; do
+    [ -n "$name" ] && ordered+=("$name")
+  done
+  echo "Launching Claude instances:"
+  launched=0
+  for name in "${ordered[@]}"; do
+    app="${APP_OF[$name]}"
+    datadir=$(launcher_data_dir "$app")
+    capp=$(launcher_claude_app "$app")
+    [ -n "$capp" ] || capp="$CLAUDE_APP"
+    if [ -z "$datadir" ]; then
+      echo "   • $name: could not determine data dir; skipping"
+      continue
+    fi
+    if instance_running_for "$capp" "$datadir"; then
+      echo "   • $name: already running"
+      continue
+    fi
+    if waiting_for_update "$name" "$app"; then
+      echo "   • $name: waiting for update; skipped"
+      continue
+    fi
+    if [ "$launched" -gt 0 ]; then sleep "$LAUNCH_GAP"; fi
+    echo "   • $name: launching"
+    open -n "$app"
+    launched=$((launched + 1))
+  done
+  if [ "${#ordered[@]}" -eq 0 ]; then
+    echo "   (no launchers found)"
+  fi
+  exit 0
+fi
+
 if [ -z "$DISPLAY_NAME" ]; then
   echo "Usage: new-claude \"Claude Name\" [--dir DataFolderName] [--apps /install/path]" >&2
-  echo "       new-claude --list | --reopen-all" >&2
+  echo "       new-claude --list | --reopen-all | --launch-all [--apps /install/path]" >&2
   exit 1
 fi
 
@@ -226,6 +332,7 @@ cat > "$APP_PATH/Contents/MacOS/launcher" <<HDR
 # the update installs); stands down when you quit it (no update involved).
 CLAUDE_APP="$CLAUDE_APP"
 DATA_DIR="$DATA_DIR"
+DEFAULT_DATA_DIR="$DEFAULT_DATA_DIR"
 INSTANCE_NAME="$DISPLAY_NAME"
 HDR
 
@@ -275,15 +382,26 @@ claude_binary() {
 }
 
 # Exact match on the main binary AND our exact --user-data-dir (boundary-checked
-# so ".../Claude-V1" never matches ".../Claude-V12"). Search strings go through
-# the environment, NOT awk -v: values on awk's own command line can match awk's
-# own ps entry (racy self-match).
+# so ".../Claude-V1" never matches ".../Claude-V12"). When DATA_DIR is the
+# default data folder, an argless main process (the binary alone or followed
+# by flags only, no --user-data-dir= and no --type=) is this instance too
+# (word-start check on that branch only, as in instance_running_for).
+# Search strings go through the environment, NOT awk -v: values on awk's own
+# command line can match awk's own ps entry (racy self-match).
 instance_pid() {
-  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" awk '
-    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"] }
-    index($0, b) && (i = index($0, d)) {
-      r = substr($0, i + length(d), 1)
-      if (r == "" || r == " ") { print $1; f = 1; exit }
+  local isdef=0
+  [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] && isdef=1
+  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" MDEF="$isdef" awk '
+    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
+    (j = index($0, b)) {
+      if (i = index($0, d)) {
+        r = substr($0, i + length(d), 1)
+        if (r == "" || r == " ") { print $1; f = 1; exit }
+      } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
+                 !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        a = substr($0, j + length(b), 2)
+        if (a == "" || a == " -") { print $1; f = 1; exit }
+      }
     }
     END { exit f ? 0 : 1 }'
 }

@@ -98,6 +98,17 @@ Reopen every instance that isn't currently running (e.g. after an update):
 new-claude --reopen-all
 ```
 
+Launch every instance that isn't running, in the order you set in the
+instances TUI (saved in `~/.config/claude-instances/order.txt`; launchers not
+listed there follow in name order):
+
+```sh
+new-claude --launch-all
+```
+
+An instance whose watchdog is waiting for a Claude update to install is
+skipped ("waiting for update"): its watchdog reopens it once the update lands.
+
 Remove a launcher (keeps its data by default):
 
 ```sh
@@ -181,6 +192,141 @@ Details worth knowing:
 
 ---
 
+## Instances TUI
+
+`claude-instances` is a terminal dashboard for all your Claude launchers. Its
+main job is usage: one table row per instance with its plan usage (5-hour and
+weekly limits, each with its age), plus its state (running, watchdog) and
+which account it is signed into. From the same table you can act on the
+selected instance:
+
+| Key | Action |
+| --- | --- |
+| `f` | bring to front |
+| `l` | launch |
+| `q` | quit the selected instance |
+| `w` | re-arm the watchdog of a running instance whose watchdog is gone (a fresh one adopts it) |
+| `a` | launch all instances that aren't running, in table order (skips those waiting for an update) |
+| `r` | refresh usage now |
+| `s` | sign in (see below) |
+| `d` | details, including the exact rebuild command for the launcher |
+| `o` | open the watchdog log |
+| `m` | mark the current account as the expected one |
+| `shift+up` / `shift+down` | move the row; the order is saved for `a` and `--launch-all` |
+| `ctrl+q` | exit the TUI |
+
+### Install
+
+From the repo root:
+
+```sh
+pipx install .
+```
+
+For development, use a virtual environment instead:
+
+```sh
+pip install -e '.[dev]'
+```
+
+Python 3.11 or newer is required. `--apps DIR` (repeatable) points the TUI at
+launcher folders other than `/Applications` and `~/Applications`.
+
+### Live usage
+
+Live usage numbers come from claude.ai using each instance's own session, which
+Claude keeps encrypted with the "Claude Safe Storage" key from your Keychain.
+The TUI never reads the Keychain itself: you hand it the key through a file
+descriptor with `av`, so the key lives only in memory.
+
+Store the key in av once:
+
+```sh
+security find-generic-password -s "Claude Safe Storage" -a "Claude Key" -w | av save --stdin CLAUDE_SAFE_STORAGE
+```
+
+Run it with the key on file descriptor 3:
+
+```sh
+av inject --mode=fd +CLAUDE_SAFE_STORAGE:3 -- claude-instances --key-fd 3
+```
+
+No `av bless` step is needed. Each run asks for your approval in Automic Vault
+before the key is handed over.
+
+Without `--key-fd` the TUI runs in cached-only mode: it shows the last saved
+numbers with their age and says so in the header. The usage API
+is unofficial and may change without notice.
+
+### What is stored where
+
+Everything lives in `~/.config/claude-instances/`:
+
+```text
+order.txt                row order, one display name per line
+expected-accounts.json   the account each instance is expected to use
+usage-cache.json         last usage numbers and their times only
+signin-restore.txt       instances to relaunch after a sign-in
+```
+
+Nothing secret is written to disk: the key, decrypted cookies and raw API
+responses stay in memory.
+
+### Bring to front
+
+`f` uses System Events, so your terminal needs Automation permission: grant it
+in System Settings > Privacy & Security > Automation > (your terminal) >
+System Events.
+
+### Sign-in helper
+
+`s` signs the selected instance in while it is the only Claude running: it
+quits every other Claude (and stops their watchdogs) so the `claude://` login
+link can only land in the right instance. When you finish or cancel, it
+relaunches everything it quit. The list of instances to relaunch is written to
+`signin-restore.txt` before anything is quit, so it survives a crash and the
+TUI offers to relaunch them on its next start.
+
+### Rebuild your launchers
+
+Launchers built before the TUI don't know the argless-default rule (a Claude
+started with no `--user-data-dir` belongs to the launcher whose data is the
+default folder). Rebuild each one so `--reopen-all`, `--launch-all`, the
+watchdog and the TUI apply it. Always pass its existing data folder (and apps
+folder, if not `/Applications`); never rebuild with the name alone, because
+that repoints the launcher to a new, empty data folder:
+
+```sh
+new-claude "<Name>" --dir "<last part of the data path that new-claude --list shows>" [--apps "<folder holding the .app>"]
+```
+
+For example, a launcher named "Claude Personal" whose data is
+`~/Library/Application Support/Claude` is rebuilt with:
+
+```sh
+new-claude "Claude Personal" --dir Claude
+```
+
+The TUI's details view (`d`) shows the exact command for each launcher. A
+launcher whose data folder is not directly under
+`~/Library/Application Support` has no rebuild command there (the view says it
+cannot be rebuilt with new-claude), because `new-claude --dir` cannot build it.
+
+### Dock app
+
+To launch everything from the Dock, build a one-line AppleScript app and drag
+it to the Dock:
+
+```sh
+osacompile -o "/Applications/Claude All.app" -e "do shell script \"$HOME/.local/bin/new-claude --launch-all\""
+```
+
+The path is absolute because `do shell script` runs with a minimal `PATH`.
+`--launch-all` scans both `/Applications` and `~/Applications`. When both hold a
+launcher with the same name, the one in `/Applications` is used, by the TUI too.
+
+---
+
 ## ChatGPT instances
 
 The same trick works for OpenAI's **ChatGPT desktop app** — it is a
@@ -245,6 +391,8 @@ Requires ChatGPT.app installed at `/Applications/ChatGPT.app`
   (from https://claude.ai/download)
 - For ChatGPT instances: ChatGPT desktop app installed at
   `/Applications/ChatGPT.app` (from https://chatgpt.com/download)
+- For the instances TUI: Python 3.11 or newer and
+  [pipx](https://pipx.pypa.io/)
 
 ---
 
