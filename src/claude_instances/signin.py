@@ -20,6 +20,8 @@ from pathlib import Path
 from claude_instances import paths
 from claude_instances.actions import (
     LAUNCH_GAP_S,
+    LAUNCH_PENDING,
+    ActionResult,
     QuitRequestFailed,
     SystemActions,
     guarded_launch,
@@ -208,7 +210,10 @@ class SigninFlow:
         sleep: Callable[[float], None] = time.sleep,
         on_phase: Callable[[SigninPhase, str], None] = lambda p, m: None,
         log_dir: Path | None = None,
+        launch_one: Callable[[Launcher], ActionResult] | None = None,
     ) -> None:
+        """`launch_one` opens the target's launcher; the backend passes its own, which
+        refuses a second open within its pending-launch window. Default `guarded_launch`."""
         self.actions = actions
         self.refresh = refresh
         self.restore_path = config_dir / RESTORE_FILE
@@ -216,6 +221,10 @@ class SigninFlow:
         self.sleep = sleep
         self.on_phase = on_phase
         self.log_dir = paths.log_dir() if log_dir is None else log_dir
+        self.launch_one = launch_one if launch_one is not None else self._guarded_launch
+
+    def _guarded_launch(self, launcher: Launcher) -> ActionResult:
+        return guarded_launch(launcher, self.actions, self.default_data_dir)
 
     def run(self, plan: SigninPlan, cancelled: threading.Event) -> SigninResult:
         try:
@@ -364,9 +373,10 @@ class _Run:
         self._phase(SigninPhase.LAUNCHING, f"starting {name}")
         # A fresh ps decides, not the plan: the target may have started or stopped since.
         if not self._still_running(self.launchers[name]):
-            result = guarded_launch(self.launchers[name], self.actions,
-                                    self.flow.default_data_dir)
-            if not result.ok and result.message != "already running":
+            result = self.flow.launch_one(self.launchers[name])
+            # A launch requested moments ago is on its way: wait for it, never reopen.
+            if (not result.ok and result.message != "already running"
+                    and not result.message.endswith(LAUNCH_PENDING)):
                 raise _Failed(f"{name} was not launched: {result.message}")
         waited = 0
         while True:

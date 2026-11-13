@@ -15,7 +15,6 @@ from claude_instances.actions import (
     guarded_launch,
     launch_all,
     quit_instance,
-    rearm_watchdog,
     remove_lock_if_names,
 )
 from claude_instances.cookies import SessionState
@@ -333,7 +332,7 @@ def test_guarded_launch_opens_launcher_when_clear():
 def test_rearm_launches_through_the_launcher_while_running():
     st = state_running([501])
     fake = FakeSystemActions(ps=[main_line(501, st.launcher.data_dir)], alive={501})
-    assert rearm_watchdog(st, fake, DEFAULT).ok
+    assert guarded_launch(st.launcher, fake, DEFAULT, rearm=True).ok
     assert fake.launched == [st.launcher.app_path]
 
 

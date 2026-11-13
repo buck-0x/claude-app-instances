@@ -202,7 +202,7 @@ selected instance:
 | `f` | bring to front |
 | `l` | launch |
 | `q` | quit the selected instance |
-| `w` | re-arm the watchdog (a fresh watchdog adopts the running instance) |
+| `w` | re-arm the watchdog of a running instance whose watchdog is gone (a fresh one adopts it) |
 | `a` | launch all instances that aren't running, in table order |
 | `r` | refresh usage now |
 | `s` | sign in (see below) |

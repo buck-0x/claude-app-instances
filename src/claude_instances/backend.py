@@ -16,7 +16,7 @@ from typing import Literal
 
 from claude_instances import actions as act
 from claude_instances.accounts import ExpectedAccounts, last_known_account_uuid
-from claude_instances.actions import ActionResult, QuitOutcome, SystemActions
+from claude_instances.actions import LAUNCH_PENDING, ActionResult, QuitOutcome, SystemActions
 from claude_instances.cookies import read_claude_cookies, session_created
 from claude_instances.launchers import Launcher, discover_launchers
 from claude_instances.order import apply_order, load_order, move_name, save_order
@@ -39,6 +39,9 @@ from claude_instances.usage import Lookup, LookupResult, UsageCache
 PENDING_LAUNCH_S = 30
 
 DECRYPT_ERROR = "cannot decrypt cookies (wrong key?)"
+
+# What a claude-instances TUI's command line contains (the entry point or the package).
+_TUI_MARKERS = ("claude-instances", "claude_instances")
 
 KeyStatus = Literal["none", "unverified", "ok", "bad"]
 
@@ -108,25 +111,32 @@ class Backend:
             expected = ExpectedAccounts()
             self.expected_error = f"expected accounts file unreadable ({type(e).__name__})"
         order = load_order(self.config_dir / ORDER_FILE)
+        # The lock covers copying the shared state only: building reads every Cookies
+        # DB and must not hold up live lookups (or the event loop) meanwhile.
         with self._lock:
-            inputs = Inputs(
-                launchers=launchers,
-                ps_lines=ps_lines,
-                default_data_dir=self.default_data_dir,
-                order=order,
-                expected=expected,
-                usage_cache=self.usage_cache,
-                log_dir=self.log_dir,
-                now=self.now(),
-                live=dict(self.live),
-                account_info=dict(self.account_info),
-                live_errors=dict(self.live_errors),
-                rejected=dict(self.rejected),
-            )
-            snapshot = build_snapshot(inputs)
+            usage_cache = self.usage_cache.copy()
+            live = dict(self.live)
+            account_info = dict(self.account_info)
+            live_errors = dict(self.live_errors)
+            rejected = dict(self.rejected)
+        snapshot = build_snapshot(Inputs(
+            launchers=launchers,
+            ps_lines=ps_lines,
+            default_data_dir=self.default_data_dir,
+            order=order,
+            expected=expected,
+            usage_cache=usage_cache,
+            log_dir=self.log_dir,
+            now=self.now(),
+            live=live,
+            account_info=account_info,
+            live_errors=live_errors,
+            rejected=rejected,
+        ))
         with self._launch_lock:
             for row in snapshot.rows:
-                if row.pids:
+                # Running under a live watchdog: the requested launch (or re-arm) landed.
+                if row.pids and row.watchdog_alive:
                     self.pending_launches.pop(row.name, None)
         return snapshot
 
@@ -192,15 +202,17 @@ class Backend:
 
     # ---- launch -------------------------------------------------------------------
 
-    def _launch_launcher(self, launcher: Launcher) -> ActionResult:
+    def _launch_launcher(self, launcher: Launcher, rearm: bool = False) -> ActionResult:
+        """Every launcher open goes through here: launch, launch all, re-arm, sign-in."""
         with self._launch_lock:
             requested = self.pending_launches.get(launcher.name)
             if requested is not None:
                 age = self.monotonic() - requested
                 if age < PENDING_LAUNCH_S:
                     return ActionResult(
-                        False, f"launch requested {int(age)}s ago; waiting for it to appear")
-            result = act.guarded_launch(launcher, self.actions, self.default_data_dir)
+                        False, f"launch requested {int(age)}s ago; {LAUNCH_PENDING}")
+            result = act.guarded_launch(launcher, self.actions, self.default_data_dir,
+                                        rearm=rearm)
             if result.ok:
                 self.pending_launches[launcher.name] = self.monotonic()
             return result
@@ -227,10 +239,18 @@ class Backend:
     # ---- other actions ------------------------------------------------------------
 
     def rearm(self, name: str) -> ActionResult:
+        """Open the launcher of a running instance whose watchdog is gone, so one adopts it.
+
+        A closed row is refused: opening its launcher would be a plain launch.
+        """
         row = self._row(name)
         if row is None:
             return ActionResult(False, f"no launcher named {name}")
-        return act.rearm_watchdog(row, self.actions, self.default_data_dir)
+        if not row.pids:
+            return ActionResult(False, "not running; press l to launch")
+        if row.watchdog_alive:
+            return ActionResult(False, "watchdog already running")
+        return self._launch_launcher(row.launcher, rearm=True)
 
     def quit(self, name: str) -> tuple[QuitOutcome, str]:
         row = self._row(name)
@@ -281,13 +301,26 @@ class Backend:
 
     # ---- sign-in support ----------------------------------------------------------
 
+    def restore_owner_running(self, owner: int | None) -> bool:
+        """True when `owner` is a live claude-instances process.
+
+        A live pid alone proves nothing: after a crash or reboot an unrelated process
+        can hold the pid, and trusting it would refuse every sign-in and hide the
+        restore offer for as long as that process lives. Raises if `ps` fails.
+        """
+        if owner is None or not self.actions.is_alive(owner):
+            return False
+        return any(line.pid == owner and any(m in line.command for m in _TUI_MARKERS)
+                   for line in self.actions.processes())
+
     def pending_restore(self) -> list[str]:
         """Names an interrupted sign-in left to relaunch; empty while its owner still runs."""
         owner, names = read_restore(self.config_dir / RESTORE_FILE)
-        if owner is not None and self.actions.is_alive(owner):
+        if names and self.restore_owner_running(owner):
             return []
         return names
 
     def make_signin_flow(self, on_phase: Callable[[SigninPhase, str], None]) -> SigninFlow:
         return SigninFlow(self.actions, self.snapshot, self.config_dir, self.default_data_dir,
-                          sleep=self.sleep, on_phase=on_phase, log_dir=self.log_dir)
+                          sleep=self.sleep, on_phase=on_phase, log_dir=self.log_dir,
+                          launch_one=self._launch_launcher)

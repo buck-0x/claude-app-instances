@@ -755,10 +755,19 @@ class InstancesApp(App):
             self.status_text = (
                 f"could not read the restore file ({type(e).__name__}); not signing in")
             return
-        if (pending and owner is not None and owner != os.getpid()
-                and self.backend.actions.is_alive(owner)):
-            self.status_text = f"another sign-in (pid {owner}) is running; try again after it"
-            return
+        if pending and owner is not None and owner != os.getpid():
+            try:
+                owner_running = self.backend.restore_owner_running(owner)
+            except Exception as e:
+                self.status_text = (f"could not check the restore file's owner"
+                                    f" ({type(e).__name__}); not signing in")
+                return
+            if owner_running:
+                path = self.backend.config_dir / RESTORE_FILE
+                self.status_text = (
+                    f"another sign-in (pid {owner}) is running; try again after it"
+                    f" (if none is, delete {path})")
+                return
         # The flow rewrites the restore file, so a list left by an earlier sign-in is
         # carried into this one instead of being lost.
         carried, dropped = carry_restore(plan, pending)
