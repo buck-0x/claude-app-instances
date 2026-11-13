@@ -436,6 +436,32 @@ def test_pending_restore_ignores_live_owner(world: World, backend: Backend) -> N
     assert backend.pending_restore() == ["Claude C"]
 
 
+def test_pending_restore_offered_when_this_process_is_the_owner(world: World,
+                                                                backend: Backend) -> None:
+    import os
+    world.fake.alive.add(os.getpid())
+    world.fake.ps.append(ProcessLine(os.getpid(), TUI_COMMAND))
+    write_restore(world.cfg / "signin-restore.txt", ["Claude C"], owner_pid=os.getpid())
+    assert backend.pending_restore() == ["Claude C"]
+
+
+def test_signin_restore_records_pending_launches(world: World, backend: Backend) -> None:
+    import threading
+    from claude_instances.signin import plan_signin
+    plan = plan_signin(backend.snapshot(), "Claude I")
+    assert plan.restore == ["Claude C", "Claude P"]
+    cancelled = threading.Event()
+    cancelled.set()  # quit, then cancel: the restore relaunches P and C
+    result = backend.make_signin_flow(lambda phase, message: None).run(plan, cancelled)
+    assert result.restored == ["Claude C", "Claude P"]
+    assert set(backend.pending_launches) == {"Claude P", "Claude C"}
+    before = list(world.fake.launched)
+    backend.launch_all()  # before either relaunch has appeared
+    assert world.fake.launched.count(world.apps / "Claude C.app") == 1
+    assert world.fake.launched.count(world.apps / "Claude P.app") == 1
+    assert world.fake.launched[len(before):] == [world.apps / "Claude I.app"]
+
+
 def test_pending_restore_treats_a_reused_owner_pid_as_orphaned(world: World,
                                                                backend: Backend) -> None:
     fake = world.fake
@@ -452,3 +478,4 @@ def test_make_signin_flow(world: World, backend: Backend) -> None:
     assert flow.restore_path == world.cfg / "signin-restore.txt"
     assert flow.log_dir == world.log_dir and flow.refresh == backend.snapshot
     assert flow.launch_one == backend._launch_launcher
+    assert flow.restore_one == backend._restore_launcher

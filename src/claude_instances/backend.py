@@ -6,6 +6,7 @@ sits behind a lock and every snapshot works on copies. A failed `ps` read makes
 details (email, org, account UUID) never appear in a message or error string here.
 """
 
+import os
 import threading
 import time
 from dataclasses import replace
@@ -218,6 +219,17 @@ class Backend:
                 self.pending_launches[launcher.name] = self.monotonic()
             return result
 
+    def _restore_launcher(self, launcher: Launcher, rearm: bool) -> ActionResult:
+        """A sign-in's relaunch: no pending-age check (the flow stopped that instance's
+        watchdog itself), but the launch is recorded, so `l` or `a` right after it
+        does not open the launcher again."""
+        with self._launch_lock:
+            result = act.guarded_launch(launcher, self.actions, self.default_data_dir,
+                                        rearm=rearm)
+            if result.ok:
+                self.pending_launches[launcher.name] = self.monotonic()
+            return result
+
     def launch(self, name: str) -> ActionResult:
         try:
             launcher = self._launcher(name)
@@ -323,11 +335,13 @@ class Backend:
     def pending_restore(self) -> list[str]:
         """Names an interrupted sign-in left to relaunch; empty while its owner still runs."""
         owner, names = read_restore(self.config_dir / RESTORE_FILE)
-        if names and self.restore_owner_running(owner):
+        # This process never runs a sign-in it has not started, so its own pid is stale.
+        if names and owner != os.getpid() and self.restore_owner_running(owner):
             return []
         return names
 
     def make_signin_flow(self, on_phase: Callable[[SigninPhase, str], None]) -> SigninFlow:
         return SigninFlow(self.actions, self.snapshot, self.config_dir, self.default_data_dir,
                           sleep=self.sleep, on_phase=on_phase, log_dir=self.log_dir,
-                          launch_one=self._launch_launcher)
+                          launch_one=self._launch_launcher,
+                          restore_one=self._restore_launcher)
