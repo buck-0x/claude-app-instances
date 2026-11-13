@@ -115,7 +115,7 @@ def arm_watchdog(world: World, name: str, pid: int) -> None:
     world.fake.ps.append(ProcessLine(pid, f"/bin/zsh {script}"))
 
 
-TUI_COMMAND = "/usr/local/bin/python3 /Users/someone/.local/bin/claude-instances --key-fd 3"
+TUI_COMMAND = "/usr/local/bin/python3 /opt/pipx/bin/claude-instances --key-fd 3"
 
 
 def write_config(data_dir: Path, account: str) -> None:
