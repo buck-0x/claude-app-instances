@@ -12,6 +12,7 @@ from claude_instances.processes import (
     match_instances,
     parse_ps,
     watchdog_alive,
+    log_says_update_wait,
     watchdog_pids,
 )
 
@@ -105,3 +106,31 @@ def test_claude_binary_reads_plist(tmp_path):
     with open(app / "Contents/Info.plist", "wb") as f:
         plistlib.dump({"CFBundleExecutable": "stubclaude"}, f)
     assert claude_binary(app) == f"{app}/Contents/MacOS/stubclaude"
+
+
+UPDATE_PENDING = ("2026-11-06 12:00:00 update pending (staged=101 shipit=none) but not"
+                  " installed: Claude quit this instance to install it. ShipIt waits until"
+                  " every instance has quit; still running: Claude-A, default")
+
+
+def test_log_says_update_wait(tmp_path):
+    log = tmp_path / "X.log"
+    assert not log_says_update_wait(log)  # no log
+    log.write_text("2026-11-06 11:00:00 instance disappeared (pid 5)\n"
+                   "2026-11-06 11:00:00   other instances running: Claude-A\n"
+                   f"{UPDATE_PENDING}\n")
+    assert log_says_update_wait(log)
+    # Heartbeats and a second launcher's note keep the wait.
+    with open(log, "a") as f:
+        f.write("2026-11-06 12:30:00 still waiting for update install (30m0s; staged=101"
+                " shipit=none). Install is blocked until these quit: Claude-A\n")
+        f.write("2026-11-06 12:31:00 launcher opened while instance is down; asked"
+                " watchdog pid 9 to reopen it\n")
+    assert log_says_update_wait(log)
+    # Any later state line ends it.
+    for end in ("reopen requested by launcher",
+                "update installed (100 -> 101) after 40m0s; reopening instance",
+                "launching (101) with --user-data-dir=/x",
+                "watchdog (pid 9) exiting"):
+        log.write_text(f"{UPDATE_PENDING}\n2026-11-06 12:40:00 {end}\n")
+        assert not log_says_update_wait(log), end

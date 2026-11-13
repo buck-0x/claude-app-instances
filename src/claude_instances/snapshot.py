@@ -30,6 +30,7 @@ from claude_instances.processes import (
     ProcessLine,
     Running,
     claude_binary,
+    log_says_update_wait,
     main_processes,
     match_instances,
     watchdog_alive,
@@ -89,6 +90,10 @@ class InstanceState:
     watchdog_alive: bool
     # Other launcher apps with this display name; ignored, since the first one found wins.
     shadowed: list[Path] = field(default_factory=list)
+    # Closed, and its live watchdog waits for a Claude update to install before reopening.
+    update_waiting: bool = False
+    # When update_waiting: what still runs on the same Claude app, holding up the install.
+    update_blockers: list[str] = field(default_factory=list)
 
     @property
     def pids(self) -> list[int]:
@@ -144,27 +149,40 @@ class Inputs:
 
 def _match_all(
     launchers: list[Launcher], ps_lines: list[ProcessLine], default_data_dir: Path
-) -> tuple[dict[str, list[Running]], list[MainProcess]]:
+) -> tuple[dict[str, list[Running]], list[MainProcess], dict[Path, list[MainProcess]]]:
     """Match mains per Claude app, since launchers may point at different apps.
 
-    A main is a stray when no launcher using its app owns its data dir.
+    A main is a stray when no launcher using its app owns its data dir. Returns
+    (running per name, strays, strays per Claude app).
     """
     by_app: dict[Path, list[Launcher]] = {}
     for launcher in launchers:
         by_app.setdefault(launcher.claude_app, []).append(launcher)
     running: dict[str, list[Running]] = {}
     strays: list[MainProcess] = []
+    strays_by_app: dict[Path, list[MainProcess]] = {}
     seen: set[int] = set()
     for app, group in by_app.items():
         procs = main_processes(ps_lines, claude_binary(app))
         matched, unmatched = match_instances(procs, group, default_data_dir)
         for name, runs in matched.items():
             running.setdefault(name, []).extend(runs)
+        strays_by_app[app] = unmatched
         for proc in unmatched:
             if proc.pid not in seen:
                 seen.add(proc.pid)
                 strays.append(proc)
-    return running, strays
+    return running, strays, strays_by_app
+
+
+def _update_blockers(row: "InstanceState", rows: list["InstanceState"],
+                     strays: list[MainProcess]) -> list[str]:
+    """What runs on `row`'s Claude app and so holds up a pending update install."""
+    app = row.launcher.claude_app
+    names = [r.name for r in rows if r.pids and r.launcher.claude_app == app]
+    names += [f"{'argless Claude' if p.data_dir is None else p.data_dir.name} (no launcher)"
+              for p in strays]
+    return names
 
 
 def _usage(
@@ -192,7 +210,8 @@ def build_snapshot(inp: Inputs) -> Snapshot:
     """Combine the local reads and the caller's live state into rows in launch order."""
     by_name = {l.name: l for l in inp.launchers}
     names = apply_order(list(by_name), inp.order)
-    running, strays = _match_all(inp.launchers, inp.ps_lines, inp.default_data_dir)
+    running, strays, strays_by_app = _match_all(
+        inp.launchers, inp.ps_lines, inp.default_data_dir)
 
     rows: list[InstanceState] = []
     for position, name in enumerate(names):
@@ -206,6 +225,7 @@ def build_snapshot(inp: Inputs) -> Snapshot:
         if state is SessionState.SIGNED_IN and inp.rejected.get(name) == RejectedMark(
                 account, created):
             state = SessionState.REJECTED
+        alive = watchdog_alive(name, launcher.script_path, inp.ps_lines, inp.log_dir)
         info = inp.account_info.get(account) if account is not None else None
         email = info.email if info is not None else None
         org = info.org if info is not None else None
@@ -225,9 +245,10 @@ def build_snapshot(inp: Inputs) -> Snapshot:
             expected_mismatch=False,
             usage=_usage(inp, name, launcher.data_dir, account, org),
             live_error=inp.live_errors.get(name),
-            watchdog_alive=watchdog_alive(
-                name, launcher.script_path, inp.ps_lines, inp.log_dir),
+            watchdog_alive=alive,
             shadowed=[l.app_path for l in inp.shadowed if l.name == name],
+            update_waiting=(not running.get(name) and alive
+                            and log_says_update_wait(inp.log_dir / f"{name}.log")),
         ))
 
     account_rows = [AccountRow(r.name, r.account, r.session) for r in rows]
@@ -235,4 +256,7 @@ def build_snapshot(inp: Inputs) -> Snapshot:
     for row, account_row in zip(rows, account_rows):
         row.shared_with = groups.get(row.name, [])
         row.expected_mismatch = expected_mismatch(account_row, inp.expected)
+        if row.update_waiting:
+            row.update_blockers = _update_blockers(
+                row, rows, strays_by_app.get(row.launcher.claude_app, []))
     return Snapshot(rows=rows, strays=strays, taken_at=inp.now)

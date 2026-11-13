@@ -57,6 +57,9 @@ _PS_ERRORS = (subprocess.SubprocessError, OSError)
 PS_UNREADABLE = "could not read the process list"
 # Ends the message for a launch refused because one was requested moments ago.
 LAUNCH_PENDING = "waiting for it to appear"
+# launch_all's skip for a row whose watchdog reopens it once a Claude update installs.
+# Launching it would reopen it on the old version and keep blocking the install.
+UPDATE_WAIT_SKIP = "waiting for update; skipped"
 
 
 @dataclass(frozen=True)
@@ -373,7 +376,8 @@ def launch_all(
 ) -> list[tuple[str, ActionResult]]:
     """Launch every row the snapshot shows closed, in row order.
 
-    Rows shown running or duplicated are reported as skipped. After a successful
+    Rows shown running, duplicated or waiting for an update to install are reported
+    as skipped. After a successful
     launch the next attempt waits `gap_s` first; there is no wait after the last row.
     Each launch still goes through `launch_one` (default `guarded_launch`), which
     re-reads `ps`, so a stale snapshot cannot cause a duplicate.
@@ -390,6 +394,9 @@ def launch_all(
             continue
         if row.is_running:
             results.append((row.name, ActionResult(False, "already running")))
+            continue
+        if row.update_waiting:
+            results.append((row.name, ActionResult(False, UPDATE_WAIT_SKIP)))
             continue
         if gap_due:
             sleep(gap_s)

@@ -33,7 +33,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 
 from claude_instances.accounts import short_id
-from claude_instances.actions import AUTOMATION_HELP, QuitOutcome
+from claude_instances.actions import AUTOMATION_HELP, UPDATE_WAIT_SKIP, QuitOutcome
 from claude_instances.backend import Backend
 from claude_instances.cookies import SessionState
 from claude_instances.paths import RESTORE_FILE
@@ -72,7 +72,7 @@ LIVE_LABELS = {
 LEVEL_STYLES = {"warn": "bold yellow", "crit": "bold red"}
 
 # launch_all's messages for rows it did not try to launch: skips, not failures.
-_LAUNCH_ALL_SKIPS = ("already running", "duplicates running; skipped")
+_LAUNCH_ALL_SKIPS = ("already running", "duplicates running; skipped", UPDATE_WAIT_SKIP)
 
 # Screen actions refused while a sign-in runs.
 _BLOCKED_DURING_SIGNIN = frozenset(
@@ -112,6 +112,8 @@ def state_cell(row: InstanceState) -> Text:
         if row.argless:
             return Text("● open (not started by a launcher)", style="green")
         return Text("● open", style="green")
+    if row.update_waiting:
+        return Text("○ closed: waiting for update", style="dim")
     return Text("○ closed", style="dim")
 
 
@@ -171,7 +173,9 @@ def shadowed_message(snapshot: Snapshot) -> str | None:
 
 def launch_all_message(results: list) -> str:
     launched = [name for name, r in results if r.ok]
-    skipped = [name for name, r in results if not r.ok and r.message in _LAUNCH_ALL_SKIPS]
+    skipped = [name for name, r in results
+               if not r.ok and r.message in _LAUNCH_ALL_SKIPS and r.message != UPDATE_WAIT_SKIP]
+    waiting = [name for name, r in results if not r.ok and r.message == UPDATE_WAIT_SKIP]
     failed = [f"{name} ({r.message})" for name, r in results
               if not r.ok and r.message not in _LAUNCH_ALL_SKIPS]
     parts = []
@@ -179,6 +183,8 @@ def launch_all_message(results: list) -> str:
         parts.append(f"launched {', '.join(launched)}")
     if skipped:
         parts.append(f"skipped {', '.join(skipped)} (running)")
+    if waiting:
+        parts.append(f"skipped {', '.join(waiting)} (waiting for update)")
     if failed:
         parts.append(f"not launched: {', '.join(failed)}")
     return "launch all: " + ("; ".join(parts) if parts else "no instances")
@@ -718,8 +724,10 @@ class InstancesApp(App):
             results = backend.launch_all(names)
             seen = {name for name, _ in results}
             launched = [name for name, r in results if r.ok]
-            running = [name for name, r in results
-                       if not r.ok and r.message in _LAUNCH_ALL_SKIPS]
+            running = [name for name, r in results if not r.ok
+                       and r.message in _LAUNCH_ALL_SKIPS and r.message != UPDATE_WAIT_SKIP]
+            waiting = [name for name, r in results
+                       if not r.ok and r.message == UPDATE_WAIT_SKIP]
             failed = [(name, r.message) for name, r in results
                       if not r.ok and r.message not in _LAUNCH_ALL_SKIPS]
             gone = [name for name in names if name not in seen]
@@ -728,6 +736,9 @@ class InstancesApp(App):
                 parts.append(f"relaunched {', '.join(launched)}")
             if running:
                 parts.append(f"already running: {', '.join(running)}")
+            if waiting:
+                parts.append(
+                    f"waiting for update (its watchdog reopens it): {', '.join(waiting)}")
             if gone:
                 parts.append(f"no launcher, dropped: {', '.join(gone)}")
             if failed:

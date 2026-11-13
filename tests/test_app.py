@@ -217,6 +217,52 @@ async def test_live_tick_clears_in_flight_when_the_worker_cannot_start(
         assert pilot.app.scheduler.next_due() is not None
 
 
+def waiting_for_update(world, fake) -> None:
+    """Claude I's watchdog (pid 700) is alive and waiting for an update to install."""
+    (world.log_dir / "Claude I.lock").symlink_to("700")
+    script = world.app_path("Claude I") / "Contents/MacOS/launcher"
+    fake.ps.append(ProcessLine(700, f"/bin/zsh {script}"))
+    (world.log_dir / "Claude I.log").write_text(
+        "2026-11-06 12:00:00 update pending (staged=101 shipit=none) but not installed:"
+        " Claude quit this instance; still running: Claude-C\n")
+
+
+async def test_update_wait_shown_in_state_and_details(backend, world, fake):
+    waiting_for_update(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        table = pilot.app.query_one(DataTable)
+        assert str(table.get_row("Claude I")[2]) == "○ closed: waiting for update"
+        select(pilot, "Claude I")
+        await pilot.press("d")
+        await pilot.pause()
+        assert ("Update:           waiting for a Claude update to install; blocked by"
+                " Claude C, Claude Dup") in pilot.app.screen.text
+
+
+async def test_launch_all_skips_an_instance_waiting_for_update(backend, world, fake):
+    waiting_for_update(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await finish_workers(pilot)
+        assert fake.launched == []
+        assert "skipped Claude I (waiting for update)" in pilot.app.status_text
+
+
+async def test_restore_leaves_an_instance_waiting_for_update_to_its_watchdog(
+        backend, world, fake):
+    waiting_for_update(world, fake)
+    write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=99999)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("y")
+        await finish_workers(pilot)
+        assert fake.launched == []
+        assert not (world.cfg / RESTORE_FILE).exists()
+        assert "waiting for update (its watchdog reopens it): Claude I" in pilot.app.status_text
+
+
 async def test_header_reflects_bad_key(backend_with_decrypt_errors):
     async with InstancesApp(backend_with_decrypt_errors).run_test() as pilot:
         pilot.app.live_tick()

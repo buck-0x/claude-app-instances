@@ -8,6 +8,7 @@ from helpers import FakeSystemActions
 from claude_instances.actions import (
     LAUNCH_GAP_S,
     QUIT_SIGNAL,
+    UPDATE_WAIT_SKIP,
     ActionResult,
     MacSystemActions,
     QuitOutcome,
@@ -347,6 +348,17 @@ def test_launch_all_order_skip_and_gap():
     assert [n for n, r in results if r.ok] == ["B", "C"]
     assert slept == [LAUNCH_GAP_S] == [3]
     assert fake.launched == [Path("/Apps/B.app"), Path("/Apps/C.app")]
+
+
+def test_launch_all_skips_rows_waiting_for_an_update():
+    waiting = closed("W")
+    waiting.update_waiting = True
+    fake = FakeSystemActions()
+    results = dict(launch_all(snapshot(rows=[waiting, closed("B")]), fake, DEFAULT,
+                              sleep=no_sleep))
+    assert results["W"] == ActionResult(False, UPDATE_WAIT_SKIP)
+    assert UPDATE_WAIT_SKIP == "waiting for update; skipped"
+    assert fake.launched == [Path("/Apps/B.app")]
 
 
 def test_launch_all_uses_given_launch_one_and_no_gap_after_failure():
