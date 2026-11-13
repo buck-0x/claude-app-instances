@@ -80,8 +80,8 @@ def test_defaults(monkeypatch):
 
 - [ ] **Step 5: Create the venv and run the test to verify it fails**
 
-Run: `python3 -m venv /Users/btw/devOS/claude-instances/.venv && /Users/btw/devOS/claude-instances/.venv/bin/pip install -e '/Users/btw/devOS/claude-instances[dev]'`
-Run: `/Users/btw/devOS/claude-instances/.venv/bin/pytest tests/test_paths.py -v`
+Run: `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`
+Run: `.venv/bin/pytest tests/test_paths.py -v`
 Expected: FAIL, `ModuleNotFoundError: claude_instances.paths`
 
 - [ ] **Step 6: Implement `paths.py` and the `cli.py` skeleton**
@@ -90,7 +90,7 @@ Expected: FAIL, `ModuleNotFoundError: claude_instances.paths`
 
 - [ ] **Step 7: Run tests to verify they pass**
 
-Run: `/Users/btw/devOS/claude-instances/.venv/bin/pytest -v`
+Run: `.venv/bin/pytest -v`
 Expected: 3 passed
 
 - [ ] **Step 8: Commit**
@@ -363,7 +363,7 @@ Before posting, the agent re-reads `av --help`, `av save --help`, `av inject --h
 1. Store the Safe Storage password in Automic Vault once (the password is the Keychain item service "Claude Safe Storage", account "Claude Key"; this pipes it straight into av without echoing it):
    `security find-generic-password -s "Claude Safe Storage" -a "Claude Key" -w | av save --stdin CLAUDE_SAFE_STORAGE`
 2. Install the package and bless the entry point:
-   `pipx install --editable /Users/btw/devOS/claude-instances` then `av bless ~/.local/bin/claude-instances` (if av refuses because the path is a launcher or symlink, use `av bless --endorse-launcher ~/.local/bin/claude-instances`; tell the agent which form worked so the README can say so).
+   `pipx install --editable .` then `av bless ~/.local/bin/claude-instances` (if av refuses because the path is a launcher or symlink, use `av bless --endorse-launcher ~/.local/bin/claude-instances`; tell the agent which form worked so the README can say so).
 3. Run the probe against one signed-in instance's data dir:
    `av inject --mode=fd +CLAUDE_SAFE_STORAGE:3 -- claude-instances probe --key-fd 3 --data-dir "$HOME/Library/Application Support/<data folder>"`
 4. Paste the probe output back. It contains only paths, statuses and the shape (keys, types, buckets): no emails, IDs, cookies or raw bodies. If any line looks like a real value, do not paste it; report the line position instead.
@@ -1356,7 +1356,7 @@ Test 6: ShipIt-style relaunch: the default instance dies and comes back argless 
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `/Users/btw/devOS/claude-instances/tests/test-argless.sh`
+Run: `tests/test-argless.sh`
 Expected: checks 1, 3, 4, 5, 11 and 12 report `✗` (the default launcher is reopened or launches a second stub); the others may already pass.
 Run: `.venv/bin/pytest tests/test_generated_launcher.py -v`
 Expected: FAIL (`has_argless_rule` is False)
@@ -1383,11 +1383,11 @@ The `ps -axo command=` caller in `instance_running_for` has no pid column, so `j
 
 - [ ] **Step 4: Run the new test and the existing watchdog test**
 
-Run: `/Users/btw/devOS/claude-instances/tests/test-argless.sh`
+Run: `tests/test-argless.sh`
 Expected: `Results: 12 passed, 0 failed`
 Run: `.venv/bin/pytest tests/test_generated_launcher.py -v`
 Expected: 1 passed
-Run: `/Users/btw/devOS/claude-instances/tests/test-watchdog.sh`
+Run: `tests/test-watchdog.sh`
 Expected: `0 failed` (unchanged behavior)
 
 - [ ] **Step 5: Commit**
@@ -1435,7 +1435,7 @@ Cleanup kills the three watchdogs by launcher path and the stubs, and removes th
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `/Users/btw/devOS/claude-instances/tests/test-launch-all.sh`
+Run: `tests/test-launch-all.sh`
 Expected: `Unknown option: --launch-all`, all checks `✗`
 
 - [ ] **Step 3: Implement `--launch-all`**
@@ -1444,11 +1444,11 @@ Model the block on the `# ---- --reopen-all mode` block. Add `new-claude --launc
 
 - [ ] **Step 4: Run the new test and both existing tests**
 
-Run: `/Users/btw/devOS/claude-instances/tests/test-launch-all.sh`
+Run: `tests/test-launch-all.sh`
 Expected: `Results: 10 passed, 0 failed`
-Run: `/Users/btw/devOS/claude-instances/bin/new-claude.sh --help | tail -n 1`
+Run: `bin/new-claude.sh --help | tail -n 1`
 Expected: `Re-running with the same name safely rebuilds that launcher.`
-Run: `/Users/btw/devOS/claude-instances/tests/test-argless.sh && /Users/btw/devOS/claude-instances/tests/test-watchdog.sh`
+Run: `tests/test-argless.sh && tests/test-watchdog.sh`
 Expected: both `0 failed`
 
 - [ ] **Step 5: Commit**
@@ -1509,7 +1509,7 @@ git commit -m "docs: instances TUI, launch-all, launcher rebuild and Dock app"
 
 - [ ] **Step 1: Prepare the rebuild commands (read-only)**
 
-Run: `/Users/btw/devOS/claude-instances/bin/new-claude.sh --list` and `/Users/btw/devOS/claude-instances/bin/new-claude.sh --list --apps ~/Applications`
+Run: `bin/new-claude.sh --list` and `bin/new-claude.sh --list --apps ~/Applications`
 From each entry build `new-claude "<name>" --dir "<basename of data>"` plus `--apps "<dir of app>"` when not `/Applications`. Any launcher whose data path is not directly under `~/Library/Application Support` is listed as "cannot be rebuilt with new-claude; leave as is". The agent does not run the rebuilds (they stop running watchdogs).
 
 - [ ] **Step 2: Stop and hand the end-to-end check to the user**
