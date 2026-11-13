@@ -31,6 +31,7 @@ ACCOUNT_HASH_LEN = 12
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _TIME_FIELDS = ("five_hour_resets_at", "week_resets_at", "fetched_at")
 _PCT_FIELDS = ("five_hour_pct", "week_pct")
+_PCT_WIDTH = 4  # "100%"
 
 
 class Source(Enum):
@@ -67,7 +68,9 @@ class Lookup(Protocol):
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A finite int or float: `json.loads` accepts NaN and Infinity, which never count."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
 
 
 def _parse_sample(sample: Any) -> tuple[int | float, str, float | None, float | None] | None:
@@ -259,10 +262,14 @@ def is_live(usage: Usage, now: datetime) -> bool:
 
 
 def format_cell(pct: float | None, resets_at: datetime | None, usage: Usage | None, now: datetime) -> str:
-    """One usage cell: live "12%  2h10m" (or "12%"), cached "44% · 37d old", else NO_DATA."""
+    """One usage cell: live " 12%  2h10m" (or " 12%"), cached " 44% · 37d old", else NO_DATA.
+
+    The percentage (or NO_DATA) is right-aligned in a fixed slot, so the reset times
+    and ages after it line up down the column.
+    """
     if pct is None or usage is None:
-        return NO_DATA
-    shown = f"{math.floor(pct)}%"
+        return f"{NO_DATA:>{_PCT_WIDTH}}"
+    shown = f"{math.floor(pct)}%".rjust(_PCT_WIDTH)
     if is_live(usage, now):
         return shown if resets_at is None else f"{shown}  {format_until(resets_at - now)}"
     return f"{shown} · {format_age(now - usage.fetched_at)} old"

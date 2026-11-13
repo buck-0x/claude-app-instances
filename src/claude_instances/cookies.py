@@ -18,7 +18,8 @@ _RETRY_DELAY_S = 0.2
 
 _QUERY = (
     "SELECT name, host_key, encrypted_value, expires_utc, creation_utc FROM cookies"
-    " WHERE host_key LIKE '%claude.ai' AND name IN ('sessionKey', 'lastActiveOrg')"
+    " WHERE (host_key IN ('claude.ai', '.claude.ai') OR host_key LIKE '%.claude.ai')"
+    " AND name IN ('sessionKey', 'lastActiveOrg')"
 )
 
 
@@ -66,7 +67,15 @@ def _read(path: Path) -> CookieStore:
         meta = con.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()
         if meta is None:
             raise sqlite3.DatabaseError("Cookies DB has no meta version")
-        return CookieStore(rows=rows, db_version=int(meta[0]))
+        try:
+            version = int(meta[0])
+            # A time datetime cannot hold would raise later, in every snapshot.
+            for row in rows:
+                chromium_time(row.expires_utc)
+                chromium_time(row.creation_utc)
+        except (ValueError, TypeError, OverflowError):
+            raise sqlite3.DatabaseError("Cookies DB holds an unusable value") from None
+        return CookieStore(rows=rows, db_version=version)
     finally:
         con.close()
 

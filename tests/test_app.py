@@ -198,7 +198,7 @@ async def test_live_lookup_marks_row_live(backend_with_fake_lookup):
         pilot.app.live_tick()
         await finish_workers(pilot)
         cell = str(pilot.app.query_one(DataTable).get_row("Claude C")[4])
-        assert cell.startswith("12%") and "old" not in cell
+        assert cell.startswith(" 12%") and "old" not in cell
         assert "live usage ✓" in pilot.app.header_text
 
 

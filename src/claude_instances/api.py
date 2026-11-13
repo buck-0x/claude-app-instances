@@ -8,6 +8,7 @@ fixed text plus a status or exception type name: never URLs, ids, headers, cooki
 values or body text.
 """
 
+import math
 import urllib.parse
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ _WEEK = "seven_day"
 
 def _pct(window: dict) -> float | None:
     value = window.get("utilization")
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
         return value
     return None
 
@@ -91,7 +92,9 @@ def _failure(result: HttpResult) -> LookupResult | None:
     """The outcome for a non-200 (or transport-failed) response; None for a 200."""
     if result.kind == "error":
         return LookupResult(None, error=f"live unavailable ({result.error})")
-    if result.status == 401 or (result.status == 403 and result.kind == "json"):
+    # Only a 401 means the session was refused. A 403 can mean the account may not
+    # read this org's usage while its session works.
+    if result.status == 401:
         return LookupResult(None, rejected=True)
     if result.status != 200:
         return LookupResult(None, error=f"live unavailable ({result.status})")

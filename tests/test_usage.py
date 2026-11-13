@@ -125,16 +125,38 @@ def test_format_until_and_age():
 def test_format_cell():
     live = Usage(12, NOW + timedelta(hours=2, minutes=10), 44, NOW + timedelta(days=3), NOW, Source.LIVE)
     cached = Usage(44, None, None, None, NOW - timedelta(days=37), Source.TUI_CACHE)
-    assert format_cell(live.five_hour_pct, live.five_hour_resets_at, live, NOW) == "12%  2h10m"
-    assert format_cell(live.five_hour_pct, None, live, NOW) == "12%"
-    assert format_cell(cached.five_hour_pct, None, cached, NOW) == "44% · 37d old"
-    assert format_cell(None, None, cached, NOW) == NO_DATA
+    assert format_cell(live.five_hour_pct, live.five_hour_resets_at, live, NOW) == " 12%  2h10m"
+    assert format_cell(live.five_hour_pct, None, live, NOW) == " 12%"
+    assert format_cell(cached.five_hour_pct, None, cached, NOW) == " 44% · 37d old"
+    assert format_cell(None, None, cached, NOW) == f"   {NO_DATA}"
+    # The percentage sits in a fixed, right-aligned 4-wide slot so columns line up.
+    assert format_cell(94.6, None, live, NOW) == " 94%"
+    assert format_cell(0, None, live, NOW) == "  0%"
+    assert format_cell(100, None, live, NOW) == "100%"
+    assert format_cell(None, None, None, NOW) == f"   {NO_DATA}"
     # A live number older than LIVE_STALE_AFTER_S is shown as cached with its age.
     stale = Usage(12, NOW + timedelta(hours=1), None, None, NOW - timedelta(minutes=7), Source.LIVE)
-    assert format_cell(stale.five_hour_pct, stale.five_hour_resets_at, stale, NOW) == "12% · 7m old"
+    assert format_cell(stale.five_hour_pct, stale.five_hour_resets_at, stale, NOW) == " 12% · 7m old"
 
 
 def test_lookup_result_repr_hides_account_details():
     r = LookupResult(usage=None, email="someone@example.com", org=ORG_A)
     assert "example.com" not in repr(r) and ORG_A not in repr(r)
     assert (r.rejected, r.error) == (False, None)
+
+
+def test_history_rejects_non_finite_values():
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        text = ('{"version": 2, "samples": [{"t": 1793966400000, "org": "%s",'
+                ' "u": {"fh": %s, "sd": 1}}]}' % (ORG_A, bad))
+        assert parse_plan_usage_history(text, ORG_A) is None
+    text = '{"version": 2, "samples": [{"t": NaN, "org": "%s", "u": {"fh": 1, "sd": 1}}]}' % ORG_A
+    assert parse_plan_usage_history(text, ORG_A) is None
+
+
+def test_cache_rejects_non_finite_values(tmp_path):
+    path = tmp_path / "u.json"
+    for bad in ("NaN", "Infinity"):
+        path.write_text('{"P": {"five_hour_pct": %s, "week_pct": 1, "fetched_at": "%s",'
+                        ' "account_hash": "%s"}}' % (bad, NOW.isoformat(), account_hash(ORG_A)))
+        assert UsageCache.load(path).get("P", ORG_A) is None
