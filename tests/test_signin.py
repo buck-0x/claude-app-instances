@@ -325,6 +325,18 @@ def test_target_launch_refused_fails_immediately(tmp_path, monkeypatch, fake, re
     assert not r.ok and "refused for test" in r.message and refresh.calls == 0 and r.restored == ["P", "C", "W"]
 
 
+def test_target_launch_already_pending_waits_for_it(tmp_path, fake, refresh):
+    asked = []
+
+    def pending(l: Launcher) -> ActionResult:
+        asked.append(l.name)
+        return ActionResult(False, "launch requested 3s ago; waiting for it to appear")
+    flow = SigninFlow(fake, refresh, tmp_path, DEFAULT, sleep=noop, log_dir=LOGS,
+                      launch_one=pending)
+    r = flow.run(plan_signin(snap0, "T"), threading.Event())
+    assert r.ok and asked == ["T"] and APP["T"] not in fake.launched
+
+
 def test_target_did_not_start(tmp_path, fake):
     refresh = ScriptedRefresh([NOT_RUNNING])
     flow = SigninFlow(fake, refresh, tmp_path, DEFAULT, sleep=noop, log_dir=LOGS)

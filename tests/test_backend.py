@@ -108,6 +108,16 @@ def row_of(snapshot: Snapshot, name: str) -> InstanceState:
     return snapshot.row(name)
 
 
+def arm_watchdog(world: World, name: str, pid: int) -> None:
+    """A live watchdog for `name`: its lock names `pid` and `ps` shows the script."""
+    (world.log_dir / f"{name}.lock").symlink_to(str(pid))
+    script = world.apps / f"{name}.app/Contents/MacOS/launcher"
+    world.fake.ps.append(ProcessLine(pid, f"/bin/zsh {script}"))
+
+
+TUI_COMMAND = "/usr/local/bin/python3 /Users/someone/.local/bin/claude-instances --key-fd 3"
+
+
 def write_config(data_dir: Path, account: str) -> None:
     (data_dir / "config.json").write_text(json.dumps({"lastKnownAccountUuid": account}))
 
@@ -275,12 +285,27 @@ def test_pending_launch_expires(world: World, backend: Backend) -> None:
     assert len(world.fake.launched) == 2
 
 
-def test_snapshot_clears_pending_once_running(world: World, backend: Backend) -> None:
+def test_snapshot_clears_pending_once_running_under_its_watchdog(world: World,
+                                                                 backend: Backend) -> None:
     assert backend.launch("Claude I").ok
     world.fake.ps.append(
         ProcessLine(509, f"{world.binary} --user-data-dir={world.dirs['Claude I']}"))
     backend.snapshot()
+    assert "Claude I" in backend.pending_launches  # no watchdog seen yet
+    arm_watchdog(world, "Claude I", 709)
+    backend.snapshot()
     assert "Claude I" not in backend.pending_launches
+
+
+def test_snapshot_is_built_outside_the_state_lock(backend: Backend, monkeypatch) -> None:
+    import claude_instances.backend as backend_module
+    real = backend_module.build_snapshot
+
+    def checked(inputs):
+        assert not backend._lock.locked()
+        return real(inputs)
+    monkeypatch.setattr(backend_module, "build_snapshot", checked)
+    assert backend.snapshot().rows
 
 
 def test_refused_launch_is_not_pending(world: World, backend: Backend) -> None:
@@ -325,6 +350,44 @@ def test_front_running_and_closed(world: World, backend: Backend) -> None:
 def test_rearm_opens_launcher_of_running_instance(world: World, backend: Backend) -> None:
     assert backend.rearm("Claude C").ok
     assert world.fake.launched == [world.apps / "Claude C.app"]
+    assert "Claude C" in backend.pending_launches
+
+
+def test_rearm_refused_on_closed_row(world: World, backend: Backend) -> None:
+    assert backend.rearm("Claude I") == ActionResult(False, "not running; press l to launch")
+    assert world.fake.launched == []
+
+
+def test_rearm_refused_while_watchdog_alive(world: World, backend: Backend) -> None:
+    arm_watchdog(world, "Claude C", 701)
+    assert backend.rearm("Claude C") == ActionResult(False, "watchdog already running")
+    assert world.fake.launched == []
+
+
+def test_rearm_twice_opens_the_launcher_once(world: World, backend: Backend) -> None:
+    assert backend.rearm("Claude C").ok
+    world.clock.t += 2
+    r = backend.rearm("Claude C")
+    assert not r.ok and r.message == "launch requested 2s ago; waiting for it to appear"
+    assert world.fake.launched == [world.apps / "Claude C.app"]
+
+
+def test_launch_then_rearm_opens_the_launcher_once(world: World, backend: Backend) -> None:
+    assert backend.launch("Claude I").ok
+    assert not backend.rearm("Claude I").ok  # not running yet
+    world.fake.ps.append(
+        ProcessLine(509, f"{world.binary} --user-data-dir={world.dirs['Claude I']}"))
+    r = backend.rearm("Claude I")  # running, but its watchdog is not seen yet
+    assert not r.ok and "waiting for it to appear" in r.message
+    assert world.fake.launched == [world.apps / "Claude I.app"]
+
+
+def test_launch_then_signin_target_launch_opens_once(world: World, backend: Backend) -> None:
+    assert backend.launch("Claude I").ok
+    flow = backend.make_signin_flow(lambda phase, message: None)
+    r = flow.launch_one(backend.snapshot().row("Claude I").launcher)
+    assert not r.ok and "waiting for it to appear" in r.message
+    assert world.fake.launched == [world.apps / "Claude I.app"]
 
 
 def test_move_rewrites_order_file(world: World, backend: Backend) -> None:
@@ -346,8 +409,19 @@ def test_pending_restore_ignores_live_owner(world: World, backend: Backend) -> N
     fake = world.fake
     write_restore(world.cfg / "signin-restore.txt", ["Claude C"], owner_pid=4242)
     fake.alive.add(4242)
+    fake.ps.append(ProcessLine(4242, TUI_COMMAND))
     assert backend.pending_restore() == []
     fake.alive.discard(4242)
+    assert backend.pending_restore() == ["Claude C"]
+
+
+def test_pending_restore_treats_a_reused_owner_pid_as_orphaned(world: World,
+                                                               backend: Backend) -> None:
+    fake = world.fake
+    write_restore(world.cfg / "signin-restore.txt", ["Claude C"], owner_pid=4242)
+    fake.alive.add(4242)
+    fake.ps.append(ProcessLine(4242, "/usr/sbin/unrelated-daemon --serve"))
+    assert not backend.restore_owner_running(4242)
     assert backend.pending_restore() == ["Claude C"]
 
 
@@ -356,3 +430,4 @@ def test_make_signin_flow(world: World, backend: Backend) -> None:
     assert isinstance(flow, SigninFlow)
     assert flow.restore_path == world.cfg / "signin-restore.txt"
     assert flow.log_dir == world.log_dir and flow.refresh == backend.snapshot
+    assert flow.launch_one == backend._launch_launcher

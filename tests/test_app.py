@@ -502,6 +502,7 @@ async def test_signin_carries_a_pending_restore_list(backend, world):
 async def test_signin_refused_while_another_tui_owns_the_restore_file(backend, world, fake):
     write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=4242)
     fake.alive.add(4242)
+    fake.ps.append(ProcessLine(4242, "/usr/bin/python3 /usr/local/bin/claude-instances"))
     async with InstancesApp(backend).run_test() as pilot:
         await pilot.pause()
         assert not isinstance(pilot.app.screen, RestoreOfferScreen)
@@ -510,6 +511,23 @@ async def test_signin_refused_while_another_tui_owns_the_restore_file(backend, w
         await pilot.pause()
         assert not isinstance(pilot.app.screen, ConfirmScreen)
         assert "another sign-in (pid 4242)" in pilot.app.status_text
+
+
+async def test_reused_owner_pid_neither_blocks_signin_nor_hides_the_offer(backend, world,
+                                                                          fake):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=4242)
+    fake.alive.add(4242)
+    fake.ps.append(ProcessLine(4242, "/usr/sbin/unrelated-daemon"))
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, RestoreOfferScreen)
+        await pilot.press("n")
+        await pilot.pause()
+        select(pilot, "Claude C")
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ConfirmScreen)
+        assert "another sign-in" not in pilot.app.status_text
 
 
 async def test_restore_counts_running_instances_as_restored(backend, world, fake):

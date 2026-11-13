@@ -162,6 +162,10 @@ class UsageCache:
             return cls()
         return cls({k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, dict)})
 
+    def copy(self) -> "UsageCache":
+        """A copy whose entries later `put` calls on this cache leave unchanged."""
+        return UsageCache(self._entries)
+
     def save(self, path: Path) -> None:
         """Write the cache atomically with mode 0600."""
         write_private_json(path, self._entries)

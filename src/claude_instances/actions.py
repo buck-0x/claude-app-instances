@@ -55,6 +55,8 @@ _AUTOMATION_DENIED_MARKERS = ("-1743", "not allowed assistive access", "Not auth
 # How a failed process-list read surfaces: `ps` exiting non-zero or not starting.
 _PS_ERRORS = (subprocess.SubprocessError, OSError)
 PS_UNREADABLE = "could not read the process list"
+# Ends the message for a launch refused because one was requested moments ago.
+LAUNCH_PENDING = "waiting for it to appear"
 
 
 @dataclass(frozen=True)
@@ -195,13 +197,6 @@ def guarded_launch(
     if reason is not None:
         return ActionResult(False, reason)
     return actions.launch(launcher.app_path)
-
-
-def rearm_watchdog(
-    state: InstanceState, actions: SystemActions, default_data_dir: Path
-) -> ActionResult:
-    """Open the launcher for a running instance so a fresh watchdog adopts it."""
-    return guarded_launch(state.launcher, actions, default_data_dir, rearm=True)
 
 
 # ---- quit -----------------------------------------------------------------------
