@@ -72,7 +72,8 @@ LIVE_LABELS = {
 LEVEL_STYLES = {"warn": "bold yellow", "crit": "bold red"}
 
 # launch_all's messages for rows it did not try to launch: skips, not failures.
-_LAUNCH_ALL_SKIPS = ("already running", "duplicates running; skipped", UPDATE_WAIT_SKIP)
+_RUNNING_SKIPS = ("already running", "duplicates running; skipped")
+_LAUNCH_ALL_SKIPS = (*_RUNNING_SKIPS, UPDATE_WAIT_SKIP)
 
 # Screen actions refused while a sign-in runs.
 _BLOCKED_DURING_SIGNIN = frozenset(
@@ -173,8 +174,7 @@ def shadowed_message(snapshot: Snapshot) -> str | None:
 
 def launch_all_message(results: list) -> str:
     launched = [name for name, r in results if r.ok]
-    skipped = [name for name, r in results
-               if not r.ok and r.message in _LAUNCH_ALL_SKIPS and r.message != UPDATE_WAIT_SKIP]
+    skipped = [name for name, r in results if not r.ok and r.message in _RUNNING_SKIPS]
     waiting = [name for name, r in results if not r.ok and r.message == UPDATE_WAIT_SKIP]
     failed = [f"{name} ({r.message})" for name, r in results
               if not r.ok and r.message not in _LAUNCH_ALL_SKIPS]
@@ -724,8 +724,7 @@ class InstancesApp(App):
             results = backend.launch_all(names)
             seen = {name for name, _ in results}
             launched = [name for name, r in results if r.ok]
-            running = [name for name, r in results if not r.ok
-                       and r.message in _LAUNCH_ALL_SKIPS and r.message != UPDATE_WAIT_SKIP]
+            running = [name for name, r in results if not r.ok and r.message in _RUNNING_SKIPS]
             waiting = [name for name, r in results
                        if not r.ok and r.message == UPDATE_WAIT_SKIP]
             failed = [(name, r.message) for name, r in results
