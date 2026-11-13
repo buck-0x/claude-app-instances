@@ -85,6 +85,17 @@ def _who(row: InstanceState) -> str:
     return short_id(row.account) if row.account else "unknown"
 
 
+def _expected(row: InstanceState) -> str:
+    """The expected account: its email when it is the signed-in one, else a short id."""
+    if row.expected is None:
+        return "not set"
+    if row.expected == row.account:
+        return row.email or short_id(row.expected)
+    if row.account is not None:
+        return f"{short_id(row.expected)} (not the signed-in account)"
+    return short_id(row.expected)
+
+
 def details_text(row: InstanceState, support_dir: Path, log_dir: Path) -> str:
     """Everything the details panel shows for one row."""
     launcher = row.launcher
@@ -99,7 +110,7 @@ def details_text(row: InstanceState, support_dir: Path, log_dir: Path) -> str:
         row.name,
         "",
         f"Account:          {_who(row)} ({row.session.value.replace('_', ' ')})",
-        f"Expected account: {short_id(row.expected) if row.expected else 'not set'}",
+        f"Expected account: {_expected(row)}",
         f"Data folder:      {launcher.data_dir}",
         f"Launcher:         {launcher.app_path}",
         f"Session expires:  {expiry}",
@@ -110,6 +121,8 @@ def details_text(row: InstanceState, support_dir: Path, log_dir: Path) -> str:
         lines.append("Note:             old one-shot launcher")
     elif not launcher.has_argless_rule:
         lines.append("Note:             launcher predates the argless rule")
+    for path in row.shadowed:
+        lines.append(f"Same name:        {path} (ignored; the launcher above is used)")
     if row.live_error:
         lines.append(f"Live lookup:      {row.live_error}")
     lines += ["", SESSION_CAVEAT, "", f"Last {LOG_TAIL_LINES} watchdog log lines:",

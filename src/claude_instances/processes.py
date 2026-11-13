@@ -143,9 +143,13 @@ def match_instances(
 
 
 def watchdog_pids(lines: list[ProcessLine], script_path: Path) -> list[int]:
-    """Pids whose command line contains the launcher script path."""
+    """Pids whose command line holds the launcher script path as a whole token.
+
+    The path must start the line or follow a space, and end it or precede a space,
+    so `/Applications/X.app/...` never matches `~/Applications/X.app/...`.
+    """
     script = str(script_path)
-    return [line.pid for line in lines if script in line.command]
+    return [line.pid for line in lines if _after_binary(line.command, script) is not None]
 
 
 def watchdog_alive(

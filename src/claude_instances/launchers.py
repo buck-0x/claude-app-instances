@@ -83,20 +83,35 @@ def _read_launcher(app: Path, default_claude_app: Path) -> Launcher | None:
     return Launcher(name, app, script, data_dir, claude_app, is_watchdog, has_argless_rule)
 
 
+def scan_launchers(
+    apps_dirs: list[Path], default_claude_app: Path = Path("/Applications/Claude.app")
+) -> tuple[list[Launcher], list[Launcher]]:
+    """(launchers, shadowed): one launcher per display name, sorted by name.
+
+    When two apps share a display name the first found wins, scanning `apps_dirs` in
+    order and each dir in path order, as `new-claude --launch-all` does; the others
+    come back in `shadowed`. Missing dirs, unreadable plists and scripts without a
+    data dir are skipped.
+    """
+    kept: dict[str, Launcher] = {}
+    shadowed: list[Launcher] = []
+    for apps_dir in apps_dirs:
+        for app in sorted(apps_dir.glob("*.app")):
+            launcher = _read_launcher(app, default_claude_app)
+            if launcher is None:
+                continue
+            if launcher.name in kept:
+                shadowed.append(launcher)
+            else:
+                kept[launcher.name] = launcher
+    return sorted(kept.values(), key=lambda l: l.name), shadowed
+
+
 def discover_launchers(
     apps_dirs: list[Path], default_claude_app: Path = Path("/Applications/Claude.app")
 ) -> list[Launcher]:
-    """All launcher apps directly inside `apps_dirs`, sorted by name (codepoint order).
-
-    Missing dirs, unreadable plists and scripts without a data dir are skipped.
-    """
-    found = []
-    for apps_dir in apps_dirs:
-        for app in apps_dir.glob("*.app"):
-            launcher = _read_launcher(app, default_claude_app)
-            if launcher is not None:
-                found.append(launcher)
-    return sorted(found, key=lambda l: (l.name, str(l.app_path)))
+    """The launchers `scan_launchers` keeps: one per display name, sorted by name."""
+    return scan_launchers(apps_dirs, default_claude_app)[0]
 
 
 def rebuild_command(launcher: Launcher, support_dir: Path) -> str | None:

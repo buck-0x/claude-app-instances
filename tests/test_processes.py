@@ -73,6 +73,18 @@ def test_watchdog_pids_match_script_path_only():
     assert watchdog_pids(parse_ps(FIXTURE), V1_SCRIPT) == [508]
 
 
+def test_watchdog_pids_need_the_whole_script_path():
+    script = Path("/Applications/Claude W.app/Contents/MacOS/launcher")
+    lines = [
+        ProcessLine(1, f"/bin/zsh {script}"),
+        ProcessLine(2, f"/bin/zsh /Users/u{script}"),  # the same name in ~/Applications
+        ProcessLine(3, f"/bin/zsh {script}.bak"),
+        ProcessLine(4, f"/bin/zsh {script} --flag"),
+        ProcessLine(5, f"{script}"),
+    ]
+    assert watchdog_pids(lines, script) == [1, 4, 5]
+
+
 def test_watchdog_alive_requires_lock_and_live_cmdline(tmp_path):
     lines = parse_ps(FIXTURE)
     assert not watchdog_alive("Claude V1", V1_SCRIPT, lines, tmp_path)  # no lock

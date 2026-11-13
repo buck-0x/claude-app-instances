@@ -160,6 +160,15 @@ def row_cells(row: InstanceState, now: datetime) -> tuple:
     )
 
 
+def shadowed_message(snapshot: Snapshot) -> str | None:
+    """A status line naming launchers that share a display name, or None."""
+    names = [r.name for r in snapshot.rows if r.shadowed]
+    if not names:
+        return None
+    return (f"more than one launcher named {', '.join(names)}; using the first found"
+            " (see details)")
+
+
 def launch_all_message(results: list) -> str:
     launched = [name for name, r in results if r.ok]
     skipped = [name for name, r in results if not r.ok and r.message in _LAUNCH_ALL_SKIPS]
@@ -367,6 +376,7 @@ class InstancesApp(App):
         self._status_text = ""
         self._refreshed_at: datetime | None = None
         self._shown_expected_error: str | None = None
+        self._shown_shadowed: str | None = None
         self.signin_thread: threading.Thread | None = None
         self.signin_cancel: threading.Event | None = None
         self.signin_active = False
@@ -455,6 +465,10 @@ class InstancesApp(App):
             if error is not None and error != self._shown_expected_error:
                 self.status_text = error
             self._shown_expected_error = error
+            shadowed = shadowed_message(snapshot)
+            if shadowed is not None and shadowed != self._shown_shadowed:
+                self.status_text = shadowed
+            self._shown_shadowed = shadowed
             self._update_header()
             if self.main_screen.ready:
                 self.main_screen.show_snapshot(snapshot)
@@ -648,14 +662,14 @@ class InstancesApp(App):
             self.status_text = f"{row.name} has no known account"
             return
         who = row.email or short_id(row.account)
-        self._confirm_expected(row.name, who)
+        self._confirm_expected(row.name, who, row.account)
 
     @guarded("mark expected")
-    def _confirm_expected(self, name: str, who: str) -> None:
+    def _confirm_expected(self, name: str, who: str, account: str) -> None:
         def answered(yes: bool | None) -> None:
             if yes:
                 try:
-                    self.status_text = self.backend.mark_expected(name).message
+                    self.status_text = self.backend.mark_expected(name, account).message
                 except Exception as e:
                     self.status_text = f"mark expected failed ({type(e).__name__})"
                 self.refresh_state()
@@ -772,8 +786,10 @@ class InstancesApp(App):
         # carried into this one instead of being lost.
         carried, dropped = carry_restore(plan, pending)
         lines = [f"Sign in {name}?"]
-        if plan.quit_rows:
-            lines.append(f"Will be quit: {', '.join(plan.quit_rows)}")
+        # Rows that cannot be relaunched are listed once, under their own heading.
+        will_quit = [n for n in plan.quit_rows if n in plan.restore]
+        if will_quit:
+            lines.append(f"Will be quit: {', '.join(will_quit)}")
         if plan.watchdog_rows:
             lines.append(f"Watchdogs stopped: {', '.join(plan.watchdog_rows)}")
         if plan.not_restorable:
@@ -872,7 +888,7 @@ class InstancesApp(App):
                         who = row.email
                 except KeyError:
                     pass
-            self._confirm_expected(target, who)
+            self._confirm_expected(target, who, result.new_account)
 
     def finish_signin(self, timeout: float | None = None) -> None:
         """Cancel a running sign-in and wait for its restore; a no-op when none ran."""

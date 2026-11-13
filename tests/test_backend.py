@@ -146,6 +146,27 @@ def test_snapshot_rows_in_order(world: World, backend: Backend) -> None:
     assert row_of(snap, "Claude C").pid == 501 and row_of(snap, "Claude P").argless
 
 
+def test_same_name_launchers_resolve_alike_everywhere(world: World, tmp_path: Path) -> None:
+    user_apps = tmp_path / "UserApps"
+    make_launcher_app(user_apps, "Claude I", world.support / "Claude-I-2",
+                      claude_app=world.claude_app, default_data_dir=world.dirs["Claude P"])
+    b = Backend(
+        apps_dirs=[world.apps, user_apps], config_dir=world.cfg, log_dir=world.log_dir,
+        support_dir=world.support, actions=world.fake, lookup=None,
+        default_data_dir=world.dirs["Claude P"], default_claude_app=world.claude_app,
+        sleep=lambda s: None, now=lambda: NOW, monotonic=world.clock)
+    row = b.snapshot().row("Claude I")
+    assert row.launcher.app_path == world.apps / "Claude I.app"
+    assert row.shadowed == [user_apps / "Claude I.app"]
+    from claude_instances.app import shadowed_message
+    from claude_instances.screens import details_text
+    assert f"Same name:        {user_apps / 'Claude I.app'} (ignored" in details_text(
+        row, world.support, world.log_dir)
+    assert shadowed_message(b.snapshot()) == (
+        "more than one launcher named Claude I; using the first found (see details)")
+    assert b.launch("Claude I").ok and world.fake.launched == [world.apps / "Claude I.app"]
+
+
 def test_snapshot_raises_when_ps_fails(world: World, backend: Backend) -> None:
     def fail(name: str) -> None:
         if name == "processes":

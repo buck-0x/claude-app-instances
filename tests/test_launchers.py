@@ -4,6 +4,7 @@ from pathlib import Path
 from claude_instances.launchers import (
     Launcher,
     discover_launchers,
+    scan_launchers,
     parse_launcher_script,
     rebuild_command,
 )
@@ -84,3 +85,18 @@ def test_scans_multiple_dirs_and_missing_dir(tmp_path):
 def test_parse_script_without_data_dir_uses_default_app():
     default = Path("/Applications/Claude.app")
     assert parse_launcher_script("#!/bin/zsh\necho hi\n", default) == (None, default, False, False)
+
+
+def test_same_name_in_two_dirs_first_dir_wins(tmp_path):
+    system, user = tmp_path / "Applications", tmp_path / "home/Applications"
+    make_launcher_app(system, "Claude Work", tmp_path / "AS/Claude-Work")
+    make_launcher_app(user, "Claude Work", tmp_path / "AS/Claude-Work-2")
+    make_launcher_app(user, "Claude Solo", tmp_path / "AS/Claude-Solo")
+    kept, shadowed = scan_launchers([system, user])
+    assert [(l.name, l.app_path.parent) for l in kept] == [
+        ("Claude Solo", user), ("Claude Work", system)]
+    assert [l.app_path for l in shadowed] == [user / "Claude Work.app"]
+    assert discover_launchers([system, user]) == kept
+    # The scan order decides, not the path order.
+    kept, shadowed = scan_launchers([user, system])
+    assert kept[1].app_path.parent == user and shadowed[0].app_path.parent == system
