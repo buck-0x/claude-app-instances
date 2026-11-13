@@ -336,6 +336,43 @@ async def test_details_shows_rebuild_command_log_and_caveat(backend, world):
         assert not isinstance(pilot.app.screen, DetailsScreen)
 
 
+def test_details_expected_account_line(backend, world):
+    from claude_instances.screens import details_text
+    from claude_instances.snapshot import AccountInfo
+    expected = world.cfg / "expected-accounts.json"
+    world.cfg.mkdir(parents=True, exist_ok=True)
+
+    def line(email=None):
+        if email is not None:
+            backend.account_info[A] = AccountInfo(email, ORG)
+        text = details_text(backend.snapshot().row("Claude C"), world.support, world.log_dir)
+        return next(l for l in text.splitlines() if l.startswith("Expected account:"))
+
+    assert line() == "Expected account: not set"
+    expected.write_text(json.dumps({"Claude C": A}))
+    assert line() == f"Expected account: {A[:8]}"  # same account, email unknown
+    assert line(EMAIL) == f"Expected account: {EMAIL}"
+    expected.write_text(json.dumps({"Claude C": B}))
+    assert line() == f"Expected account: {B[:8]} (not the signed-in account)"
+    expected.write_text(json.dumps({"Claude I": B}))
+    text = details_text(backend.snapshot().row("Claude I"), world.support, world.log_dir)
+    assert f"Expected account: {B[:8]}\n" in text  # current account unknown
+
+
+async def test_mark_expected_refuses_when_the_account_changed_since_shown(backend, world):
+    async with InstancesApp(backend).run_test() as pilot:
+        select(pilot, "Claude C")
+        await pilot.press("m")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ConfirmScreen) and A[:8] in pilot.app.screen.question
+        (world.dirs["Claude C"] / "config.json").write_text(
+            json.dumps({"lastKnownAccountUuid": B}))
+        await pilot.press("y")
+        await pilot.pause()
+        assert not (world.cfg / "expected-accounts.json").exists()
+        assert "account changed" in pilot.app.status_text
+
+
 async def test_move_row_rewrites_order_file(backend, world):
     async with InstancesApp(backend).run_test() as pilot:
         select(pilot, "Claude C")
@@ -424,6 +461,17 @@ async def test_finish_signin_cancels_and_joins(backend):
         await start_signin(pilot, "Claude I")
         pilot.app.finish_signin(timeout=5)
         assert flow.restored and not pilot.app.signin_thread.is_alive()
+
+
+async def test_signin_confirmation_lists_each_quit_row_once(backend, world):
+    async with InstancesApp(backend).run_test() as pilot:
+        select(pilot, "Claude I")
+        await pilot.press("s")
+        await pilot.pause()
+        question = pilot.app.screen.question
+        assert "Will be quit: Claude C\n" in question
+        assert question.count("Claude Dup") == 1
+        await pilot.press("n")
 
 
 async def test_signin_offers_expected_account(backend, world):

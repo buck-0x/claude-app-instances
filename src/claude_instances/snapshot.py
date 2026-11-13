@@ -87,6 +87,8 @@ class InstanceState:
     usage: Usage | None
     live_error: str | None
     watchdog_alive: bool
+    # Other launcher apps with this display name; ignored, since the first one found wins.
+    shadowed: list[Path] = field(default_factory=list)
 
     @property
     def pids(self) -> list[int]:
@@ -137,6 +139,7 @@ class Inputs:
     account_info: dict[str, AccountInfo]
     live_errors: dict[str, str]
     rejected: dict[str, RejectedMark]
+    shadowed: list[Launcher] = field(default_factory=list)
 
 
 def _match_all(
@@ -224,6 +227,7 @@ def build_snapshot(inp: Inputs) -> Snapshot:
             live_error=inp.live_errors.get(name),
             watchdog_alive=watchdog_alive(
                 name, launcher.script_path, inp.ps_lines, inp.log_dir),
+            shadowed=[l.app_path for l in inp.shadowed if l.name == name],
         ))
 
     account_rows = [AccountRow(r.name, r.account, r.session) for r in rows]

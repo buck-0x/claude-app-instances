@@ -18,7 +18,7 @@ from claude_instances import actions as act
 from claude_instances.accounts import ExpectedAccounts, last_known_account_uuid
 from claude_instances.actions import LAUNCH_PENDING, ActionResult, QuitOutcome, SystemActions
 from claude_instances.cookies import read_claude_cookies, session_created
-from claude_instances.launchers import Launcher, discover_launchers
+from claude_instances.launchers import Launcher, scan_launchers
 from claude_instances.order import apply_order, load_order, move_name, save_order
 from claude_instances.paths import EXPECTED_FILE, ORDER_FILE, RESTORE_FILE, USAGE_CACHE_FILE
 from claude_instances.signin import SigninFlow, SigninPhase, read_restore
@@ -88,7 +88,7 @@ class Backend:
     # ---- reads --------------------------------------------------------------------
 
     def _launchers(self) -> list[Launcher]:
-        return discover_launchers(self.apps_dirs, self.default_claude_app)
+        return scan_launchers(self.apps_dirs, self.default_claude_app)[0]
 
     def _launcher(self, name: str) -> Launcher:
         for launcher in self._launchers():
@@ -102,7 +102,7 @@ class Backend:
 
     def snapshot(self) -> Snapshot:
         """A fresh snapshot. Raises when `ps` cannot be read: never "nothing running"."""
-        launchers = self._launchers()
+        launchers, shadowed = scan_launchers(self.apps_dirs, self.default_claude_app)
         ps_lines = self.actions.processes()
         try:
             expected = self._load_expected()
@@ -132,6 +132,7 @@ class Backend:
             account_info=account_info,
             live_errors=live_errors,
             rejected=rejected,
+            shadowed=shadowed,
         ))
         with self._launch_lock:
             for row in snapshot.rows:
@@ -277,8 +278,12 @@ class Backend:
         if moved != current:
             save_order(path, moved)
 
-    def mark_expected(self, name: str) -> ActionResult:
-        """Record `name`'s current account as its expected one."""
+    def mark_expected(self, name: str, shown: str | None = None) -> ActionResult:
+        """Record `name`'s current account as its expected one.
+
+        With `shown`, the account the user confirmed, a current account that differs
+        (the instance switched since) is refused rather than recorded.
+        """
         try:
             data_dir = self._launcher(name).data_dir
         except KeyError:
@@ -286,6 +291,8 @@ class Backend:
         account = last_known_account_uuid(data_dir)
         if account is None:
             return ActionResult(False, f"{name} has no known account")
+        if shown is not None and account != shown:
+            return ActionResult(False, f"{name}'s account changed; check it and try again")
         try:
             expected = self._load_expected()
         except (ValueError, OSError) as e:
