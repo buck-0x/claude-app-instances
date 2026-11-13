@@ -173,7 +173,10 @@ class Backend:
             if result.usage is not None:
                 self.live[name] = LiveEntry(account, result.usage)
                 if account is not None:
-                    self.account_info[account] = AccountInfo(result.email, result.org)
+                    # A lookup that could not read the email keeps the one already known.
+                    known = self.account_info.get(account, AccountInfo())
+                    self.account_info[account] = AccountInfo(result.email or known.email,
+                                                              result.org or known.org)
                 self.rejected.pop(name, None)
                 self.live_errors.pop(name, None)
                 self.key_status = "ok"

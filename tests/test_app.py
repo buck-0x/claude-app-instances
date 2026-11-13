@@ -202,6 +202,21 @@ async def test_live_lookup_marks_row_live(backend_with_fake_lookup):
         assert "live usage ✓" in pilot.app.header_text
 
 
+async def test_live_tick_clears_in_flight_when_the_worker_cannot_start(
+        backend_with_fake_lookup, monkeypatch):
+    async with InstancesApp(backend_with_fake_lookup).run_test() as pilot:
+        await pilot.pause()
+
+        def refuse(*args, **kwargs):
+            raise RuntimeError("no worker")
+        monkeypatch.setattr(pilot.app, "run_worker", refuse)
+        pilot.app.live_tick()
+        assert "live lookup failed (RuntimeError)" in pilot.app.status_text
+        monkeypatch.undo()
+        # The scheduler is not left in flight, so the next lookup can still run.
+        assert pilot.app.scheduler.next_due() is not None
+
+
 async def test_header_reflects_bad_key(backend_with_decrypt_errors):
     async with InstancesApp(backend_with_decrypt_errors).run_test() as pilot:
         pilot.app.live_tick()
