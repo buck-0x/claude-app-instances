@@ -227,6 +227,14 @@ def test_email_follows_account(world: World, backend: Backend) -> None:
     assert row.email is None and (row.usage is None or row.usage.source is not Source.LIVE)
 
 
+def test_lookup_without_email_keeps_the_known_email(backend: Backend,
+                                                     fake_lookup: FakeLookup) -> None:
+    backend.live_lookup("Claude C")
+    fake_lookup.results["Claude-C"] = LookupResult(usage=USAGE, email=None, org=ORG)
+    backend.live_lookup("Claude C")
+    assert row_of(backend.snapshot(), "Claude C").email == EMAIL
+
+
 def test_key_status_bad_on_decrypt_error(backend: Backend, fake_lookup: FakeLookup) -> None:
     fake_lookup.results = {k: LookupResult(usage=None, error=DECRYPT_ERROR)
                            for k in fake_lookup.results}

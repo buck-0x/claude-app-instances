@@ -485,7 +485,12 @@ class InstancesApp(App):
             finally:
                 self._from_thread(self._live_finished, name, ok)
 
-        self.run_worker(body, thread=True, group="live", exit_on_error=False)
+        try:
+            self.run_worker(body, thread=True, group="live", exit_on_error=False)
+        except Exception:
+            # Never leave the scheduler in flight, or live lookups stop for the session.
+            self.scheduler.finish(name, False)
+            raise
 
     @guarded("live lookup")
     def _live_finished(self, name: str, ok: bool) -> None:
