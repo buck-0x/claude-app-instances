@@ -11,6 +11,7 @@ import os
 import plistlib
 import re
 import subprocess
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,14 @@ from claude_instances.launchers import Launcher
 _PS_LINE = re.compile(r"^\s*(\d+)\s+(.*)$")
 _TYPE_FLAG = "--type="
 _DATA_DIR_FLAG = "--user-data-dir="
+
+# How many trailing watchdog log lines decide whether it waits for an update install.
+# `new-claude --launch-all` reads the same number with the same rule.
+UPDATE_WAIT_LOG_LINES = 200
+_UPDATE_WAIT_START = re.compile(r"update pending \(.*but not installed")
+# Lines a watchdog in update wait may log without leaving it.
+_UPDATE_WAIT_NOISE = ("still waiting for update install",
+                      "launcher opened while instance is down")
 
 
 @dataclass(frozen=True)
@@ -150,6 +159,27 @@ def watchdog_pids(lines: list[ProcessLine], script_path: Path) -> list[int]:
     """
     script = str(script_path)
     return [line.pid for line in lines if _after_binary(line.command, script) is not None]
+
+
+def log_says_update_wait(log_path: Path) -> bool:
+    """True when a watchdog's log says it waits for a Claude update to install.
+
+    The watchdog logs `update pending (...) but not installed` as it starts waiting,
+    then only heartbeats (and notes from a launcher opened meanwhile) until it
+    reopens or exits, each of which logs another line. So the wait holds when the
+    last log line other than those is the `update pending` one. Callers also check
+    that the watchdog is alive: a dead one waits for nothing.
+    """
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            tail = deque(f, maxlen=UPDATE_WAIT_LOG_LINES)
+    except OSError:
+        return False
+    for line in reversed(tail):
+        if any(noise in line for noise in _UPDATE_WAIT_NOISE):
+            continue
+        return _UPDATE_WAIT_START.search(line) is not None
+    return False
 
 
 def watchdog_alive(

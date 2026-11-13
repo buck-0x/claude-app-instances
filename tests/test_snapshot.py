@@ -222,6 +222,24 @@ def test_watchdog_alive_in_row(tmp_path):
     assert not row_of(build_snapshot(w.inputs()), "Claude C").watchdog_alive
 
 
+def test_update_wait_in_row_with_blockers(tmp_path):
+    w = World(tmp_path)
+    launcher = next(l for l in w.inputs().launchers if l.name == "Claude I")
+    (w.log_dir / "Claude I.log").write_text(
+        "2026-11-06 12:00:00 update pending (staged=101 shipit=none) but not installed:"
+        " Claude quit this instance; still running: Claude-C\n")
+    stray = ProcessLine(520, f"{w.binary} --user-data-dir={w.support / 'Elsewhere'}")
+    # No watchdog: the log alone does not make a waiting row.
+    assert not row_of(build_snapshot(w.inputs()), "Claude I").update_waiting
+    os.symlink("600", w.log_dir / "Claude I.lock")
+    ps = w.ps(ProcessLine(600, f"/bin/zsh {launcher.script_path}"), stray)
+    snap = build_snapshot(w.inputs(ps_lines=ps))
+    i = row_of(snap, "Claude I")
+    assert i.update_waiting
+    assert i.update_blockers == ["Claude C", "Claude P", "Elsewhere (no launcher)"]
+    assert not row_of(snap, "Claude C").update_waiting
+
+
 def test_live_error_passed_through(tmp_path):
     w = World(tmp_path)
     snap = build_snapshot(w.inputs(live_errors={"Claude I": "no key"}))

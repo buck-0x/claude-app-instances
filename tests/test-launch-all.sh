@@ -120,5 +120,31 @@ else
 fi
 
 echo ""
+echo "Test 5: an instance whose watchdog waits for an update install is skipped"
+reset_all
+# A stand-in watchdog: a live process whose command line holds Two's launcher
+# script, named by Two's lock, with an update-wait line last in Two's log.
+zsh -c 'sleep 60; :' "$(launcher_of "Claude LA Two")" &
+FAKE_WD=$!
+ln -sf "$FAKE_WD" "$LOG_DIR/Claude LA Two.lock"
+print -r -- "$(date '+%Y-%m-%d %H:%M:%S') update pending (staged=101 shipit=none) but not installed: Claude quit this instance to install it. ShipIt waits until every instance has quit; still running: claude-la-test-one" > "$LOG_DIR/Claude LA Two.log"
+print -r -- "$(date '+%Y-%m-%d %H:%M:%S') still waiting for update install (30m0s; staged=101 shipit=none). Install is blocked until these quit: claude-la-test-one" >> "$LOG_DIR/Claude LA Two.log"
+OUT=$("$NEW_CLAUDE" --launch-all --apps "$APPS")
+if print -r -- "$OUT" | grep -qxF "   • Claude LA Two: waiting for update; skipped"; then
+  ok "Two is skipped as waiting for update"
+else
+  bad "Two is skipped as waiting for update"
+  print -r -- "$OUT" | sed 's/^/      /'
+fi
+if [ "$(launched "$OUT")" = "Claude LA One,Claude LA Three" ]; then
+  ok "the others still launch"
+else
+  bad "the others still launch (got: $(launched "$OUT"))"
+fi
+kill "$FAKE_WD" 2>/dev/null
+wait "$FAKE_WD" 2>/dev/null
+rm -f "$LOG_DIR/Claude LA Two.lock"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

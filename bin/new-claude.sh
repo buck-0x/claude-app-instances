@@ -181,9 +181,28 @@ fi
 # saved (order.txt, one display name per line), then the unlisted ones in
 # codepoint order (LC_ALL=C sort, as Python's sorted() does), with a gap
 # between launches. Scans /Applications and ~/Applications unless --apps given.
+# An instance whose watchdog waits for a Claude update to install is skipped:
+# the watchdog reopens it once the update lands, and launching it now would
+# reopen it on the old version and keep blocking the install.
 if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
   LAUNCH_GAP=3
   ORDER_FILE="${CLAUDE_INSTANCES_CONFIG_DIR:-$HOME/.config/claude-instances}/order.txt"
+  WATCHDOG_LOG_DIR="$HOME/Library/Logs/claude-instances"
+  # True when $1's watchdog is alive (its lock names a process whose command line
+  # holds launcher app $2's script) and its log says it waits for an update
+  # install: the last of the last 200 lines, heartbeats and launcher notes
+  # aside, is the "update pending ... but not installed" line. Same rule as the
+  # instances TUI (processes.log_says_update_wait).
+  waiting_for_update() {
+    local name="$1" script="$2/Contents/MacOS/launcher" pid="" cmd=""
+    pid=$(readlink "$WATCHDOG_LOG_DIR/$name.lock" 2>/dev/null) || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+    case " $cmd " in *" $script "*) ;; *) return 1 ;; esac
+    tail -n 200 "$WATCHDOG_LOG_DIR/$name.log" 2>/dev/null \
+      | grep -v -e 'still waiting for update install' -e 'launcher opened while instance is down' \
+      | tail -n 1 | grep -q 'update pending (.*but not installed'
+  }
   if [ "$APPS_GIVEN" -eq 1 ]; then
     scan_dirs=("$APPS_DIR")
   else
@@ -227,6 +246,10 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
     fi
     if instance_running_for "$capp" "$datadir"; then
       echo "   • $name: already running"
+      continue
+    fi
+    if waiting_for_update "$name" "$app"; then
+      echo "   • $name: waiting for update; skipped"
       continue
     fi
     if [ "$launched" -gt 0 ]; then sleep "$LAUNCH_GAP"; fi

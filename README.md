@@ -106,6 +106,9 @@ listed there follow in name order):
 new-claude --launch-all
 ```
 
+An instance whose watchdog is waiting for a Claude update to install is
+skipped ("waiting for update"): its watchdog reopens it once the update lands.
+
 Remove a launcher (keeps its data by default):
 
 ```sh
@@ -203,7 +206,7 @@ selected instance:
 | `l` | launch |
 | `q` | quit the selected instance |
 | `w` | re-arm the watchdog of a running instance whose watchdog is gone (a fresh one adopts it) |
-| `a` | launch all instances that aren't running, in table order |
+| `a` | launch all instances that aren't running, in table order (skips those waiting for an update) |
 | `r` | refresh usage now |
 | `s` | sign in (see below) |
 | `d` | details, including the exact rebuild command for the launcher |
@@ -319,7 +322,8 @@ osacompile -o "/Applications/Claude All.app" -e "do shell script \"$HOME/.local/
 ```
 
 The path is absolute because `do shell script` runs with a minimal `PATH`.
-`--launch-all` scans both `/Applications` and `~/Applications`.
+`--launch-all` scans both `/Applications` and `~/Applications`. When both hold a
+launcher with the same name, the one in `/Applications` is used, by the TUI too.
 
 ---
 

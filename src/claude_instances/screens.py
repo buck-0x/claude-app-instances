@@ -121,6 +121,10 @@ def details_text(row: InstanceState, support_dir: Path, log_dir: Path) -> str:
         lines.append("Note:             old one-shot launcher")
     elif not launcher.has_argless_rule:
         lines.append("Note:             launcher predates the argless rule")
+    if row.update_waiting:
+        blockers = ", ".join(row.update_blockers) or "nothing running now"
+        lines.append(f"Update:           waiting for a Claude update to install;"
+                     f" blocked by {blockers}")
     for path in row.shadowed:
         lines.append(f"Same name:        {path} (ignored; the launcher above is used)")
     if row.live_error:
