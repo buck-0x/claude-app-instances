@@ -39,6 +39,14 @@ class RaisingHttp:
 
 # parsers
 
+def test_parse_usage_rejects_non_finite_utilization():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        data = {"five_hour": {"utilization": bad, "resets_at": None},
+                "seven_day": {"utilization": 5, "resets_at": None}}
+        u = parse_usage_response(data, NOW)
+        assert u.five_hour_pct is None and u.week_pct == 5
+
+
 def test_parse_usage_response_from_fixture():
     u = parse_usage_response(USAGE_FIXTURE, NOW)
     assert u.source is Source.LIVE and 0 <= u.five_hour_pct <= 100
@@ -156,10 +164,17 @@ def test_json_401_is_rejected(tmp_path):
     assert (r.rejected, r.error) == (True, None)
 
 
-def test_json_403_is_rejected(tmp_path):
+def test_json_403_is_unavailable_not_rejected(tmp_path):
+    # Only a 401 means the session was refused; a 403 can be a permission on the org.
     make_signed_in_dir(tmp_path, PW)
     r = UsageLookup(FakeHttp(usage=HttpResult(403, {"error": "x"}, "json")), KEY).lookup(tmp_path)
-    assert (r.rejected, r.usage, r.error) == (True, None, None)
+    assert (r.rejected, r.usage, r.error) == (False, None, "live unavailable (403)")
+
+
+def test_orgs_403_is_unavailable_not_rejected(tmp_path):
+    make_signed_in_dir(tmp_path, PW, org=None)
+    r = UsageLookup(FakeHttp(orgs=HttpResult(403, {"error": "x"}, "json")), KEY).lookup(tmp_path)
+    assert (r.rejected, r.error) == (False, "live unavailable (403)")
 
 
 def test_other_status_is_unavailable(tmp_path):

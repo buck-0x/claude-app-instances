@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from helpers import chromium_us, make_cookie_db
@@ -81,3 +82,32 @@ def test_db_version_read(tmp_path):
     make_cookie_db(tmp_path / "Cookies", [(".claude.ai", "sessionKey", b"v10xx", 0, 1)], version=24)
     store = read_claude_cookies(tmp_path)
     assert store is not None and store.db_version == 24
+
+
+def test_host_match_is_dot_bounded(tmp_path):
+    make_cookie_db(tmp_path / "Cookies", [
+        ("claude.ai", "sessionKey", b"v10a", 0, 1),
+        (".claude.ai", "sessionKey", b"v10b", 0, 2),
+        ("www.claude.ai", "sessionKey", b"v10c", 0, 3),
+        ("evilclaude.ai", "sessionKey", b"v10d", 0, 4),
+        (".notclaude.ai", "sessionKey", b"v10e", 0, 5),
+    ])
+    store = read_claude_cookies(tmp_path)
+    assert sorted(r.host_key for r in store.rows) == [".claude.ai", "claude.ai", "www.claude.ai"]
+
+
+def test_bad_meta_version_is_unknown_not_raised(tmp_path):
+    make_cookie_db(tmp_path / "Cookies", [(".claude.ai", "sessionKey", b"v10xx", 0, 1)])
+    con = sqlite3.connect(tmp_path / "Cookies")
+    con.execute("UPDATE meta SET value = 'x' WHERE key = 'version'")
+    con.commit()
+    con.close()
+    assert read_claude_cookies(tmp_path, sleep=lambda s: None) is None
+
+
+def test_out_of_range_times_do_not_raise(tmp_path):
+    huge = 2**62
+    make_cookie_db(tmp_path / "Cookies", [(".claude.ai", "sessionKey", b"v10xx", huge, 1)])
+    store = read_claude_cookies(tmp_path, sleep=lambda s: None)
+    # A row whose expiry is past datetime's range is unusable: never raised.
+    assert session_state(store, NOW) == (SessionState.UNKNOWN, None)
