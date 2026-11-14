@@ -129,6 +129,12 @@ class Snapshot:
                 return row
         raise KeyError(name)
 
+    @property
+    def plain_strays(self) -> list[MainProcess]:
+        """Plain Claude mains (no `--user-data-dir`, on the default folder) that no
+        launcher owns, such as the Claude ShipIt relaunches after an update."""
+        return [p for p in self.strays if p.data_dir is None]
+
 
 @dataclass
 class Inputs:
@@ -145,19 +151,26 @@ class Inputs:
     live_errors: dict[str, str]
     rejected: dict[str, RejectedMark]
     shadowed: list[Launcher] = field(default_factory=list)
+    # The Claude app a plain launch (or ShipIt's relaunch) runs; scanned for strays
+    # even when no launcher uses it.
+    default_claude_app: Path | None = None
 
 
 def _match_all(
-    launchers: list[Launcher], ps_lines: list[ProcessLine], default_data_dir: Path
+    launchers: list[Launcher], ps_lines: list[ProcessLine], default_data_dir: Path,
+    default_claude_app: Path | None = None,
 ) -> tuple[dict[str, list[Running]], list[MainProcess], dict[Path, list[MainProcess]]]:
     """Match mains per Claude app, since launchers may point at different apps.
 
-    A main is a stray when no launcher using its app owns its data dir. Returns
+    A main is a stray when no launcher using its app owns its data dir. The apps
+    scanned are the launchers' plus `default_claude_app` when given. Returns
     (running per name, strays, strays per Claude app).
     """
     by_app: dict[Path, list[Launcher]] = {}
     for launcher in launchers:
         by_app.setdefault(launcher.claude_app, []).append(launcher)
+    if default_claude_app is not None:
+        by_app.setdefault(default_claude_app, [])
     running: dict[str, list[Running]] = {}
     strays: list[MainProcess] = []
     strays_by_app: dict[Path, list[MainProcess]] = {}
@@ -211,7 +224,7 @@ def build_snapshot(inp: Inputs) -> Snapshot:
     by_name = {l.name: l for l in inp.launchers}
     names = apply_order(list(by_name), inp.order)
     running, strays, strays_by_app = _match_all(
-        inp.launchers, inp.ps_lines, inp.default_data_dir)
+        inp.launchers, inp.ps_lines, inp.default_data_dir, inp.default_claude_app)
 
     rows: list[InstanceState] = []
     for position, name in enumerate(names):

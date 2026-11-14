@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -385,6 +386,35 @@ def test_rearm_and_launch_remove_a_stale_lock_in_the_backend_log_dir(
     assert world.fake.locks == {}
     assert ("remove_lock_if_names", lock_c, 702) in world.fake.calls
     assert ("remove_lock_if_names", lock_i, 702) in world.fake.calls
+
+
+def test_quit_stray_quits_a_plain_claude_with_no_launcher(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    # Without P, nothing owns the default folder: the argless 504 is a plain stray.
+    shutil.rmtree(world.apps / "Claude P.app")
+    world.fake.alive = {501, 504}
+    b = world.backend(None)
+    assert [p.pid for p in b.snapshot().plain_strays] == [504]
+    outcome, message = b.quit_stray(504)
+    assert outcome is QuitOutcome.QUIT and message == "quit"
+    assert [c for c in world.fake.calls if c[0] in ("send_quit", "signal_pids")] == [
+        ("send_quit", 504)]
+
+
+def test_quit_stray_refuses_a_pid_that_is_no_plain_stray(world: World,
+                                                         backend: Backend) -> None:
+    # 504 belongs to launcher P (the default folder); 501 is C's; 999 is gone.
+    for pid in (504, 501, 999):
+        outcome, _ = backend.quit_stray(pid)
+        assert outcome is QuitOutcome.NOT_RUNNING
+    assert not [c for c in world.fake.calls if c[0] in ("send_quit", "signal_pids")]
+
+
+def test_quit_on_default_launcher_quits_its_plain_claude(world: World, backend: Backend) -> None:
+    world.fake.alive = {501, 504}
+    outcome, _ = backend.quit("Claude P")
+    assert outcome is QuitOutcome.QUIT
+    assert ("send_quit", 504) in world.fake.calls
 
 
 def test_rearm_refused_on_closed_row(world: World, backend: Backend) -> None:

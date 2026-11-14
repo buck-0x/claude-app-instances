@@ -79,7 +79,7 @@ launcher_claude_app() {
 }
 
 # Is an instance of $1 (app bundle) running with --user-data-dir=$2 exactly?
-# When $2 is the default data folder, an argless main process (the binary alone
+# When $2 is (or resolves to) the default data folder, an argless main process (the binary alone
 # or followed by flags only, no --user-data-dir= and no --type=) counts too.
 # Only the argless branch needs the binary at a word start; the
 # --user-data-dir branch keeps its substring match (a bundle under a symlinked
@@ -89,7 +89,9 @@ launcher_claude_app() {
 instance_running_for() {
   local capp="$1" datadir="$2" exe="" isdef=0
   exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$capp/Contents/Info.plist" 2>/dev/null) || exe=""
-  [ "$datadir" = "$DEFAULT_DATA_DIR" ] && isdef=1
+  if [ "$datadir" = "$DEFAULT_DATA_DIR" ] || [ "${datadir:A}" = "${DEFAULT_DATA_DIR:A}" ]; then
+    isdef=1
+  fi
   ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" MDEF="$isdef" awk '
     BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
     (j = index($0, b)) {
@@ -394,6 +396,17 @@ inst_pid=""
 started_at=$(date +%s)
 # This script's path as run (in a function, $0 is the function's name).
 SELF="$0"
+# 1 when DATA_DIR is (or resolves to) Claude's default data folder. A plain Claude
+# (no --user-data-dir, as ShipIt relaunches it after an update) runs on that
+# folder, so this watchdog adopts it as its instance; other watchdogs never
+# touch a plain Claude.
+IS_DEFAULT=0
+if [ -n "$DEFAULT_DATA_DIR" ] && { [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] ||
+     [ "${DATA_DIR:A}" = "${DEFAULT_DATA_DIR:A}" ]; }; then
+  IS_DEFAULT=1
+fi
+adopted_plain=""    # the plain Claude pid whose adoption was last logged
+WATCHING=0          # 1 once this process holds the lock
 
 mkdir -p "$LOG_DIR"
 
@@ -416,34 +429,39 @@ claude_binary() {
 
 # Exact match on the main binary AND our exact --user-data-dir (boundary-checked
 # so ".../Claude-V1" never matches ".../Claude-V10"). When DATA_DIR is the
-# default data folder, an argless main process (the binary alone or followed
-# by flags only, no --user-data-dir= and no --type=) is this instance too
+# default data folder, a plain main process (the binary alone or followed by
+# flags only, no --user-data-dir= and no --type=) is this instance too
 # (word-start check on that branch only, as in instance_running_for).
+# Prints "<pid> dir" or "<pid> plain".
 # Search strings go through the environment, NOT awk -v: values on awk's own
 # command line can match awk's own ps entry (racy self-match).
 instance_pid() {
-  local isdef=0
-  [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] && isdef=1
-  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" MDEF="$isdef" awk '
+  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" MDEF="$IS_DEFAULT" awk '
     BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
     (j = index($0, b)) {
       if (i = index($0, d)) {
         r = substr($0, i + length(d), 1)
-        if (r == "" || r == " ") { print $1; f = 1; exit }
+        if (r == "" || r == " ") { print $1 " dir"; f = 1; exit }
       } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
                  !index($0, "--user-data-dir=") && !index($0, "--type=")) {
         a = substr($0, j + length(b), 2)
-        if (a == "" || a == " -") { print $1; f = 1; exit }
+        if (a == "" || a == " -") { print $1 " plain"; f = 1; exit }
       }
     }
     END { exit f ? 0 : 1 }'
 }
 
-# Also records the pid so exit diagnostics can name it.
+# Also records the pid so exit diagnostics can name it. Once this process is the
+# watchdog, a plain Claude found here is adopted and monitored like our own
+# launch; each new one is logged once.
 instance_running() {
   local p
   p=$(instance_pid) || return 1
-  inst_pid="$p"
+  inst_pid="${p%% *}"
+  if [ "${p#* }" = "plain" ] && [ "$WATCHING" -eq 1 ] && [ "$inst_pid" != "$adopted_plain" ]; then
+    adopted_plain="$inst_pid"
+    log "adopted plain Claude (pid $inst_pid) on the default profile"
+  fi
 }
 
 # Mark the start of a new instance lifetime (for crash-report lookup + uptime).
@@ -505,12 +523,14 @@ update_pending() {
 
 # ---- diagnostics ---------------------------------------------------------------
 # Data-dir names of OTHER running instances of this Claude bundle ("default" =
-# no --user-data-dir). These are what hold up a pending install.
+# no --user-data-dir). These are what hold up a pending install. For the
+# default-folder watchdog a plain Claude is its own instance, not another.
 other_instances() {
-  ps -axo command= | MB="$(claude_binary)" MD="$DATA_DIR" awk '
-    BEGIN { b = ENVIRON["MB"]; me = ENVIRON["MD"] }
+  ps -axo command= | MB="$(claude_binary)" MD="$DATA_DIR" MDEF="$IS_DEFAULT" awk '
+    BEGIN { b = ENVIRON["MB"]; me = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
     index($0, b) == 1 || index($0, " " b) {
       d = "default"
+      if (!index($0, "--user-data-dir=") && isdef == "1") next
       if (i = index($0, "--user-data-dir=")) {
         d = substr($0, i + 16); j = index(d, " --"); if (j) d = substr(d, 1, j - 1)
         if (d == me) next
@@ -555,11 +575,41 @@ log_exit_context() {
 launch_instance() {
   last_ver=$(bundle_version)
   REOPEN_REQUESTED=0
+  # Something may have started the instance meanwhile (for the default folder,
+  # ShipIt's plain relaunch): adopt it rather than start a second process on
+  # the same profile.
+  if instance_running; then
+    mark_started
+    log "instance already running (pid $inst_pid, $last_ver); not launching another"
+    return 0
+  fi
   log "launching ($last_ver) with --user-data-dir=$DATA_DIR"
   open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR" 2>/dev/null || true
   mark_started
   sleep "$SETTLE"
   instance_running && log "instance up (pid $inst_pid)"
+}
+
+# After an update installs, ShipIt relaunches a plain Claude (no
+# --user-data-dir), which runs on the default folder. The default-folder
+# watchdog gives it up to GRACE seconds to appear before launching its own, so
+# the profile never gets two processes. Succeeds when an instance is running.
+await_plain_relaunch() {
+  [ "$IS_DEFAULT" -eq 1 ] || return 1
+  log "update installed on the default profile; waiting ${GRACE}s for ShipIt to relaunch Claude before launching"
+  nap "$GRACE"
+  instance_running
+}
+
+# Reopen after an installed update: adopt ShipIt's plain relaunch when it comes
+# (default folder only), else launch.
+reopen_after_update() {
+  if await_plain_relaunch; then
+    last_ver=$(bundle_version)
+    mark_started
+    return 0
+  fi
+  launch_and_verify
 }
 
 launch_and_verify() {
@@ -620,6 +670,7 @@ fi
 trap 'log "watchdog (pid $$) exiting"; rm -f "$LOCK"' EXIT
 trap 'log "watchdog stopped by signal"; exit 0' INT TERM
 trap 'REOPEN_REQUESTED=1; log "reopen requested by launcher"' USR1
+WATCHING=1
 
 log "watchdog started (pid $$; poll=${POLL}s grace=${GRACE}s; shipit=$SHIPIT_DIR)"
 
@@ -655,7 +706,7 @@ wait_for_update_install() {
     if [ "$cur" != "$last_ver" ]; then
       log "update installed ($last_ver -> $cur) after $(fmt_dur $waited); reopening instance"
       relaunched_for="$cur"
-      launch_and_verify; return
+      reopen_after_update; return
     fi
     if [ "$REOPEN_REQUESTED" -eq 1 ]; then
       log "reopening on $cur at launcher request (the update will install after this instance quits again)"
@@ -707,7 +758,7 @@ while :; do
   if [ "$cur" != "$last_ver" ] && [ "$cur" != "$relaunched_for" ]; then
     log "update detected ($last_ver -> $cur); reopening instance"
     relaunched_for="$cur"
-    if ! launch_and_verify; then
+    if ! reopen_after_update; then
       log "reopen after update failed; exiting"
       exit 1
     fi

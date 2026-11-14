@@ -352,6 +352,64 @@ async def test_quit_that_fails_offers_rearm(backend, fake):
         assert "did not quit" in pilot.app.status_text and "press w" in pilot.app.status_text
 
 
+# ---- a plain Claude with no launcher -----------------------------------------------------
+
+def add_plain_claude(world: World, fake: FakeSystemActions, pid: int = 540) -> None:
+    """A Claude main with no --user-data-dir (as ShipIt relaunches it); no launcher
+    in this world owns the default folder, so it is a stray."""
+    fake.ps.append(ProcessLine(pid, f"{world.claude_app}/Contents/MacOS/Claude"))
+    fake.alive.add(pid)
+
+
+async def test_plain_claude_with_no_launcher_gets_its_own_open_row(backend, world, fake):
+    add_plain_claude(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        table = pilot.app.query_one(DataTable)
+        assert table.row_count == 4
+        row = table.get_row(app_module.stray_key(540))
+        assert "plain Claude" in str(row[1]) and "no launcher" in str(row[1])
+        assert "● open" in str(row[2])
+
+
+async def test_quit_on_a_plain_claude_row_asks_then_quits_that_pid(backend, world, fake):
+    add_plain_claude(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        select(pilot, app_module.stray_key(540))
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ConfirmScreen)
+        assert not [c for c in fake.calls if c[0] in ("send_quit", "signal_pids")]
+        await pilot.press("y")
+        await finish_workers(pilot)
+        assert [c for c in fake.calls if c[0] in ("send_quit", "signal_pids")] == [
+            ("send_quit", 540)]
+        assert "quit" in pilot.app.status_text
+        assert pilot.app.query_one(DataTable).row_count == 3
+
+
+async def test_plain_claude_row_offers_no_launch_rearm_or_other_actions(backend, world, fake):
+    add_plain_claude(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        for key in ("l", "w", "f", "s", "m", "d"):
+            select(pilot, app_module.stray_key(540))
+            await pilot.press(key)
+            await finish_workers(pilot)
+            assert not isinstance(pilot.app.screen, (ConfirmScreen, DetailsScreen)), key
+            assert "only q" in pilot.app.status_text, key
+        assert fake.launched == []
+        assert not [c for c in fake.calls if c[0] in ("send_quit", "signal_pids",
+                                                      "bring_to_front")]
+
+
+async def test_launch_all_leaves_a_plain_claude_alone(backend, world, fake):
+    add_plain_claude(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.press("a")
+        await finish_workers(pilot)
+        assert fake.launched == [world.app_path("Claude I")]
+        assert not [c for c in fake.calls if c[0] in ("send_quit", "signal_pids")]
+
+
 async def test_action_exception_becomes_status(backend, fake):
     async with InstancesApp(backend).run_test() as pilot:
         select(pilot, "Claude I")

@@ -134,6 +134,7 @@ class Backend:
             live_errors=live_errors,
             rejected=rejected,
             shadowed=shadowed,
+            default_claude_app=self.default_claude_app,
         ))
         with self._launch_lock:
             for row in snapshot.rows:
@@ -271,6 +272,23 @@ class Backend:
             return QuitOutcome.NOT_RUNNING, f"no launcher named {name}"
         return act.quit_instance(row, self.actions, self.sleep,
                                  default_data_dir=self.default_data_dir, log_dir=self.log_dir)
+
+    def quit_stray(self, pid: int) -> tuple[QuitOutcome, str]:
+        """Quit a plain Claude that no launcher owns, at the user's request only.
+
+        A fresh snapshot must still show `pid` as such a plain stray, so a reused pid
+        or one a launcher has since adopted is never signalled. It has no watchdog to
+        stop: nothing reopens it.
+        """
+        if pid not in {p.pid for p in self.snapshot().plain_strays}:
+            return QuitOutcome.NOT_RUNNING, "no longer running as a plain Claude"
+        try:
+            survivors = act.quit_pids([pid], self.actions, self.sleep)
+        except act.QuitRequestFailed as e:
+            return QuitOutcome.DID_NOT_QUIT, f"could not ask it to quit ({e})"
+        if survivors:
+            return QuitOutcome.DID_NOT_QUIT, "did not quit"
+        return QuitOutcome.QUIT, "quit"
 
     def front(self, name: str) -> ActionResult:
         row = self._row(name)

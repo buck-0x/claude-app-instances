@@ -187,6 +187,14 @@ Details worth knowing:
   a second copy: it adopts the instance under watchdog protection (or defers to
   the watchdog that already has it). It won't raise the window; click the
   window itself for that.
+- After it installs an update, ShipIt relaunches Claude with no
+  `--user-data-dir`, so that Claude runs on the default profile
+  (`~/Library/Application Support/Claude`). The watchdog of the launcher whose
+  data folder is (or resolves to) that folder adopts it as its instance
+  ("adopted plain Claude ... on the default profile") and waits a grace period
+  for it before launching its own, so the profile never gets two processes.
+  Other watchdogs leave a plain Claude alone, and nothing ever quits one by
+  itself.
 - `new-claude --reopen-all` reopens any instance that isn't running; use it
   after upgrading launchers, or any time a collapse already happened.
 - Watchdogs end at logout; launchers reopened by macOS "resume windows" at
@@ -216,6 +224,12 @@ selected instance:
 | `m` | mark the current account as the expected one |
 | `shift+up` / `shift+down` | move the row; the order is saved for `a` and `--launch-all` |
 | `ctrl+q` | exit the TUI |
+
+A Claude running with no `--user-data-dir` (as ShipIt relaunches it after an
+update) uses the default profile. It shows as open on the row of the launcher
+whose data folder is that profile, and `q` there quits it. When no launcher
+owns the default profile, it gets a row of its own, "stray plain Claude (no
+launcher)": open, with no launch, re-arm or other actions; only `q` quits it.
 
 ### Install
 

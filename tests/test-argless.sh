@@ -152,6 +152,61 @@ else
   sed 's/^/      /' "$DEFAULT_LOG" 2>/dev/null
 fi
 if [ "$(stub_count)" = "1" ]; then ok "no second instance launched"; else bad "no second instance launched (count=$(stub_count))"; fi
+reset_all
+
+# Stage a fake Squirrel update the way ShipIt does (as tests/test-watchdog.sh does).
+SHIPIT="$CLAUDE_LAUNCHER_SHIPIT_DIR"
+stage_update() {
+  mkdir -p "$SHIPIT/update.T1/FakeClaude.app/Contents"
+  cp "$STUB_APP/Contents/Info.plist" "$SHIPIT/update.T1/FakeClaude.app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $1" "$SHIPIT/update.T1/FakeClaude.app/Contents/Info.plist"
+  local url="file://$SHIPIT/update.T1/FakeClaude.app/"
+  print -r -- "{\"launchAfterInstallation\":true,\"updateBundleURL\":\"${url//\//\\/}\",\"bundleIdentifier\":\"local.test.fakeclaude\"}" > "$SHIPIT/ShipItState.plist"
+}
+install_update() {
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $1" "$STUB_APP/Contents/Info.plist"
+  rm -rf "$SHIPIT/update.T1" "$SHIPIT/ShipItState.plist"
+}
+
+echo ""
+echo "Test 7: after an update installs, ShipIt's plain relaunch is adopted, not doubled"
+# The default instance quits for a pending update; the watchdog waits for the
+# install. ShipIt installs, then relaunches Claude with no --user-data-dir a
+# moment later. The watchdog must adopt that plain Claude instead of launching
+# a second process on the same profile. (A longer grace keeps the timing loose.)
+"$STUB_BIN" --user-data-dir="$CLAUDE_LAUNCHER_DEFAULT_DATA_DIR" &
+sleep 1
+CLAUDE_LAUNCHER_GRACE_SECS=4 "$LAUNCHER_DEFAULT" &
+for i in {1..20}; do log_has "adopting already-running instance" && break; sleep 0.5; done
+log_has "adopting already-running instance" || bad "precondition: default launcher adopted its instance"
+stage_update 101
+kill_stub
+for i in {1..30}; do log_has "update pending (" && break; sleep 0.5; done
+log_has "update pending (" || bad "precondition: watchdog waits for the update install"
+install_update 101
+sleep 1.2
+start_argless
+sleep 6
+if log_has "adopted plain Claude (pid " && log_has ") on the default profile"; then
+  ok "watchdog adopts the plain relaunch"
+else
+  bad "watchdog adopts the plain relaunch"
+  sed 's/^/      /' "$DEFAULT_LOG" 2>/dev/null
+fi
+if [ "$(stub_count)" = "1" ] && [ "$(argless_stub_count)" = "1" ]; then
+  ok "one plain instance, no second one launched"
+else
+  bad "one plain instance, no second one launched (count=$(stub_count), argless=$(argless_stub_count))"
+fi
+if ! log_has "launching (101)"; then ok "no launch on the default profile"; else bad "no launch on the default profile"; fi
+kill_stub
+sleep 8
+if [ -z "$(watchdog_pids_for "$LAUNCHER_DEFAULT")" ]; then
+  ok "watchdog stands down once the adopted plain Claude quits"
+else
+  bad "watchdog stands down once the adopted plain Claude quits"
+fi
+if [ "$(stub_count)" = "0" ]; then ok "nothing reopened the plain Claude"; else bad "nothing reopened the plain Claude"; fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

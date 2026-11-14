@@ -37,6 +37,7 @@ from claude_instances.actions import AUTOMATION_HELP, UPDATE_WAIT_SKIP, QuitOutc
 from claude_instances.backend import Backend
 from claude_instances.cookies import SessionState
 from claude_instances.paths import RESTORE_FILE
+from claude_instances.processes import MainProcess
 from claude_instances.scheduler import STATE_INTERVAL_S, LiveScheduler
 from claude_instances.screens import (
     ConfirmScreen,
@@ -81,6 +82,25 @@ _BLOCKED_DURING_SIGNIN = frozenset(
      "move_up", "move_down"})
 
 COLUMNS = ("#", "Instance", "State", "Account", "5h", "Week")
+
+# Table keys of plain-Claude rows (no launcher owns them); a NUL never starts a name.
+_STRAY_KEY_PREFIX = "\0stray:"
+STRAY_LABEL = "stray plain Claude (no launcher)"
+STRAY_ONLY_QUIT = "a stray plain Claude has no launcher: only q (quit) works on its row"
+
+
+def stray_key(pid: int) -> str:
+    return f"{_STRAY_KEY_PREFIX}{pid}"
+
+
+def stray_pid(key: str | None) -> int | None:
+    """The pid in a plain-Claude row key, or None for a launcher row."""
+    if key is None or not key.startswith(_STRAY_KEY_PREFIX):
+        return None
+    try:
+        return int(key[len(_STRAY_KEY_PREFIX):])
+    except ValueError:
+        return None
 
 
 def guarded(label: str) -> Callable:
@@ -160,6 +180,18 @@ def row_cells(row: InstanceState, now: datetime) -> tuple:
         account_cell(row),
         usage_cell(u.five_hour_pct if u else None, u.five_hour_resets_at if u else None, u, now),
         usage_cell(u.week_pct if u else None, u.week_resets_at if u else None, u, now),
+    )
+
+
+def stray_cells(proc: MainProcess) -> tuple:
+    """A plain Claude no launcher owns: open on the default folder, no launch order."""
+    return (
+        "",
+        STRAY_LABEL,
+        Text("● open", style="green"),
+        Text(f"default folder, pid {proc.pid}", style="dim"),
+        Text(NO_DATA),
+        Text(NO_DATA),
     )
 
 
@@ -304,6 +336,8 @@ class InstancesScreen(Screen):
         table.clear()
         for row in snapshot.rows:
             table.add_row(*row_cells(row, snapshot.taken_at), key=row.name)
+        for proc in snapshot.plain_strays:
+            table.add_row(*stray_cells(proc), key=stray_key(proc.pid))
         if current is not None:
             self.select_name(current)
 
@@ -520,7 +554,11 @@ class InstancesApp(App):
     # -- helpers for actions --
 
     def _current_row(self) -> InstanceState | None:
+        """The selected launcher row; None (saying why) on a plain-Claude row."""
         name = self.main_screen.current_name()
+        if stray_pid(name) is not None:
+            self.status_text = STRAY_ONLY_QUIT
+            return None
         if name is None or self.snapshot is None:
             return None
         try:
@@ -602,6 +640,10 @@ class InstancesApp(App):
 
     @guarded("quit")
     def do_quit(self) -> None:
+        pid = stray_pid(self.main_screen.current_name())
+        if pid is not None:
+            self._quit_stray(pid)
+            return
         row = self._current_row()
         if row is None:
             return
@@ -620,6 +662,24 @@ class InstancesApp(App):
 
         self.push_screen(ConfirmScreen(f"Quit {name}? Its watchdog is stopped first."),
                          answered)
+
+    @guarded("quit")
+    def _quit_stray(self, pid: int) -> None:
+        """Quit a plain Claude no launcher owns; only ever on the user's confirmation."""
+        label = f"{STRAY_LABEL}, pid {pid}"
+
+        def body() -> str:
+            _, message = self.backend.quit_stray(pid)
+            return f"{label}: {message}"
+
+        def answered(yes: bool | None) -> None:
+            if yes:
+                self.status_text = f"quitting {label}..."
+                self._run_action("quit", body)
+
+        self.push_screen(ConfirmScreen(
+            f"Quit the {label}? It has no launcher or watchdog; nothing reopens it."),
+            answered)
 
     @guarded("refresh usage")
     def do_refresh_usage(self) -> None:
@@ -687,6 +747,9 @@ class InstancesApp(App):
     def do_move(self, delta: int) -> None:
         name = self.main_screen.current_name()
         if name is None:
+            return
+        if stray_pid(name) is not None:
+            self.status_text = STRAY_ONLY_QUIT
             return
         try:
             self.backend.move(name, delta)

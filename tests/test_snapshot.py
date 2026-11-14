@@ -116,6 +116,47 @@ def test_strays_are_mains_matching_no_launcher(tmp_path):
     other = ProcessLine(520, f"{w.binary} --user-data-dir={w.support / 'Elsewhere'}")
     snap = build_snapshot(w.inputs(ps_lines=w.ps(other)))
     assert [s.pid for s in snap.strays] == [520]
+    assert snap.plain_strays == []  # it names a folder: not a plain Claude
+
+
+def test_plain_claude_on_default_profile_belongs_to_the_default_launcher(tmp_path):
+    # ShipIt relaunches Claude with no --user-data-dir after an update.
+    w = World(tmp_path)
+    snap = build_snapshot(w.inputs())
+    p = snap.row("Claude P")
+    assert p.is_running and p.argless and p.pids == [504]
+    assert snap.plain_strays == []
+
+
+def test_plain_claude_matches_a_launcher_whose_folder_resolves_to_the_default(tmp_path):
+    w = World(tmp_path)
+    link = tmp_path / "Link-To-Default"
+    link.symlink_to(w.dirs["Claude P"])
+    launchers = [l for l in discover_launchers([w.apps], w.claude_app) if l.name != "Claude P"]
+    via_link = replace(discover_launchers([w.apps], w.claude_app)[0], name="Claude L",
+                       data_dir=link)
+    snap = build_snapshot(w.inputs(launchers=[*launchers, via_link], order=[]))
+    assert snap.row("Claude L").pids == [504] and snap.row("Claude L").argless
+    assert snap.plain_strays == []
+
+
+def test_plain_claude_without_a_default_launcher_is_a_plain_stray(tmp_path):
+    w = World(tmp_path)
+    launchers = [l for l in discover_launchers([w.apps], w.claude_app) if l.name != "Claude P"]
+    snap = build_snapshot(w.inputs(launchers=launchers))
+    assert [s.pid for s in snap.plain_strays] == [504]
+    assert all(s.data_dir is None for s in snap.plain_strays)
+
+
+def test_plain_claude_found_on_the_default_app_even_with_no_launcher_using_it(tmp_path):
+    w = World(tmp_path)
+    default_app = tmp_path / "DefaultClaude.app"
+    plain = ProcessLine(530, f"{default_app}/Contents/MacOS/Claude")
+    snap = build_snapshot(w.inputs(ps_lines=w.ps(plain), default_claude_app=default_app))
+    assert [s.pid for s in snap.plain_strays] == [530]
+    # Without the default app named, only launchers' apps are scanned.
+    snap = build_snapshot(w.inputs(ps_lines=w.ps(plain)))
+    assert snap.plain_strays == []
 
 
 def test_live_usage_shown_live_then_downgraded(tmp_path):

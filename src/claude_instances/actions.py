@@ -26,6 +26,7 @@ from claude_instances.processes import (
     MainProcess,
     ProcessLine,
     claude_binary,
+    is_default_dir,
     list_processes,
     main_processes,
     match_instances,
@@ -189,7 +190,7 @@ def launch_refusal(
         matched, _ = match_instances(procs, [launcher], default_data_dir)
         if matched[launcher.name]:
             return "already running"
-    if (launcher.data_dir == default_data_dir and not launcher.has_argless_rule
+    if (is_default_dir(launcher.data_dir, default_data_dir) and not launcher.has_argless_rule
             and any(p.data_dir is None for p in procs)):
         return ("launcher predates the argless rule and an argless Claude is running on"
                 " its folder; rebuild it first")

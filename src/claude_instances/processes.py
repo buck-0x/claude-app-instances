@@ -130,20 +130,35 @@ def main_processes(lines: list[ProcessLine], binary: str) -> list[MainProcess]:
     return procs
 
 
+def is_default_dir(data_dir: Path, default_data_dir: Path) -> bool:
+    """True when `data_dir` is, or resolves to, the default data folder.
+
+    A plain Claude (no `--user-data-dir`, as ShipIt relaunches it after an update)
+    runs on the default folder, so it belongs to the launcher whose folder this is.
+    Symlinks are resolved as the zsh `:A` modifier does in the launcher.
+    """
+    if data_dir == default_data_dir:
+        return True
+    return os.path.realpath(data_dir) == os.path.realpath(default_data_dir)
+
+
 def match_instances(
     procs: list[MainProcess], launchers: list[Launcher], default_data_dir: Path
 ) -> tuple[dict[str, list[Running]], list[MainProcess]]:
     """Map each launcher name to its running mains, and list mains matching none.
 
     A main matches every launcher with the same data dir; argless mains match the
-    launcher(s) whose data dir is `default_data_dir`. More than one match per
-    launcher means duplicates are running.
+    launcher(s) whose data dir is `default_data_dir` (see `is_default_dir`). More
+    than one match per launcher means duplicates are running.
     """
     by_name: dict[str, list[Running]] = {l.name: [] for l in launchers}
     strays = []
+    default_owners = [l for l in launchers if is_default_dir(l.data_dir, default_data_dir)]
     for proc in procs:
-        target = default_data_dir if proc.data_dir is None else proc.data_dir
-        owners = [l for l in launchers if l.data_dir == target]
+        if proc.data_dir is None:
+            owners = default_owners
+        else:
+            owners = [l for l in launchers if l.data_dir == proc.data_dir]
         for launcher in owners:
             by_name[launcher.name].append(Running(proc.pid, argless=proc.data_dir is None))
         if not owners:
