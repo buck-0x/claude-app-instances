@@ -71,6 +71,23 @@ def decrypt_cookie(row: CookieRow, key: Secret, db_version: int) -> Secret:
 
 
 def decrypt_store(store: CookieStore, key: Secret) -> dict[str, Secret]:
-    """Decrypt every row, keyed by cookie name; the newest row wins on duplicates."""
-    rows = sorted(store.rows, key=lambda r: r.creation_utc)
-    return {r.name: decrypt_cookie(r, key, store.db_version) for r in rows}
+    """Decrypt the store, keyed by cookie name: per name, the newest row that decrypts.
+
+    An unusable row (empty, an unknown prefix, bad padding) is skipped, and a name
+    with no usable row is left out, so one old or shadowed row neither disables the
+    lookup nor marks the key bad. Raises ValueError (the first row's fixed reason)
+    only when rows exist and none of them decrypts, which is what a wrong key does.
+    """
+    values: dict[str, Secret] = {}
+    first_error: ValueError | None = None
+    for row in sorted(store.rows, key=lambda r: r.creation_utc, reverse=True):
+        if row.name in values:
+            continue
+        try:
+            values[row.name] = decrypt_cookie(row, key, store.db_version)
+        except ValueError as e:
+            if first_error is None:
+                first_error = e
+    if not values and first_error is not None:
+        raise ValueError(str(first_error)) from None
+    return values

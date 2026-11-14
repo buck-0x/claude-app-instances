@@ -1,7 +1,7 @@
 import pytest
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from claude_instances.cookies import CookieRow, read_claude_cookies
+from claude_instances.cookies import CookieRow, CookieStore, read_claude_cookies
 from claude_instances.crypto import decrypt_cookie, decrypt_store, derive_key
 from claude_instances.secret import Secret
 from helpers import ORG_A, encrypt_cookie, make_signed_in_dir
@@ -77,3 +77,49 @@ def test_error_message_has_no_plaintext():
                      repr(key.reveal()), repr(blob)):
             assert leak not in text, label
         assert err.__cause__ is None and err.__suppress_context__, label
+
+
+def _row(name: str, blob: bytes, created: int, host: str = ".claude.ai") -> CookieRow:
+    return CookieRow(name, host, blob, 0, created)
+
+
+def test_decrypt_store_skips_an_unusable_newer_row():
+    key = derive_key(PW)
+    good = encrypt_cookie("sk-ant-fake-session", key.reveal(), ".claude.ai", 24)
+    store = CookieStore([_row("sessionKey", good, 1), _row("sessionKey", b"", 2),
+                         _row("sessionKey", b"v11junk", 3)], db_version=24)
+    assert decrypt_store(store, key)["sessionKey"].reveal() == "sk-ant-fake-session"
+
+
+def test_decrypt_store_prefers_the_newest_usable_row():
+    key = derive_key(PW)
+    old = encrypt_cookie("sk-ant-old", key.reveal(), ".claude.ai", 24)
+    new = encrypt_cookie("sk-ant-new", key.reveal(), "claude.ai", 24)
+    store = CookieStore([_row("sessionKey", new, 5, host="claude.ai"),
+                         _row("sessionKey", old, 1)], db_version=24)
+    assert decrypt_store(store, key)["sessionKey"].reveal() == "sk-ant-new"
+
+
+def test_decrypt_store_drops_a_name_with_no_usable_row_when_another_decrypts():
+    key = derive_key(PW)
+    good = encrypt_cookie("sk-ant-fake-session", key.reveal(), ".claude.ai", 24)
+    store = CookieStore([_row("sessionKey", good, 1),
+                         _row("lastActiveOrg", _unpadded_v10(key.reveal()), 2)], db_version=24)
+    assert set(decrypt_store(store, key)) == {"sessionKey"}
+
+
+def test_decrypt_store_raises_when_no_row_decrypts():
+    key = derive_key(PW)
+    other = derive_key(Secret("other-password")).reveal()
+    store = CookieStore([
+        _row("sessionKey", encrypt_cookie("sk-ant-fake-session", other, ".claude.ai", 24), 1),
+        _row("lastActiveOrg", encrypt_cookie(ORG_A, other, ".claude.ai", 24), 1),
+    ], db_version=24)
+    with pytest.raises(ValueError) as exc:
+        decrypt_store(store, key)
+    assert "sk-ant-fake-session" not in str(exc.value) + repr(exc.value)
+    assert exc.value.__cause__ is None
+
+
+def test_decrypt_store_of_no_rows_is_empty():
+    assert decrypt_store(CookieStore([], db_version=24), derive_key(PW)) == {}
