@@ -229,6 +229,17 @@ def test_one_unusable_cookie_row_does_not_fail_the_lookup(tmp_path):
     assert r.error is None and r.usage is not None
 
 
+def test_undecryptable_session_key_is_a_decrypt_error(tmp_path):
+    key = derive_key(PW).reveal()
+    make_cookie_db(tmp_path / "Cookies", [
+        (".claude.ai", "sessionKey", b"v10" + bytes(16), 0, 1),  # bad padding
+        (".claude.ai", "lastActiveOrg", encrypt_cookie(ORG_A, key, ".claude.ai", 24), 0, 1),
+    ])
+    http = FakeHttp(usage=USAGE_OK)
+    r = UsageLookup(http, KEY, now=lambda: NOW).lookup(tmp_path)
+    assert r.error == "cannot decrypt cookies (wrong key?)" and http.paths == []
+
+
 def test_exception_inside_lookup_is_caught(tmp_path):
     make_signed_in_dir(tmp_path, PW)
     http = RaisingHttp(RuntimeError("sk-ant-secret"))

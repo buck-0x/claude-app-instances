@@ -70,24 +70,30 @@ def decrypt_cookie(row: CookieRow, key: Secret, db_version: int) -> Secret:
     return Secret(value)
 
 
-def decrypt_store(store: CookieStore, key: Secret) -> dict[str, Secret]:
+def decrypt_store(
+    store: CookieStore, key: Secret, required: tuple[str, ...] = ("sessionKey",)
+) -> dict[str, Secret]:
     """Decrypt the store, keyed by cookie name: per name, the newest row that decrypts.
 
-    An unusable row (empty, an unknown prefix, bad padding) is skipped, and a name
-    with no usable row is left out, so one old or shadowed row neither disables the
-    lookup nor marks the key bad. Raises ValueError (the first row's fixed reason)
-    only when rows exist and none of them decrypts, which is what a wrong key does.
+    An unusable row (empty, an unknown prefix, bad padding) is skipped, so one old
+    or shadowed row neither disables the lookup nor marks the key bad. A name with
+    no usable row is left out, unless it is in `required`: then its rows' failure is
+    the answer. Raises ValueError (a fixed reason naming the cookie) when a required
+    name has rows and none decrypts, or when rows exist and none decrypts at all
+    (what a wrong key does).
     """
     values: dict[str, Secret] = {}
-    first_error: ValueError | None = None
+    errors: dict[str, ValueError] = {}
     for row in sorted(store.rows, key=lambda r: r.creation_utc, reverse=True):
         if row.name in values:
             continue
         try:
             values[row.name] = decrypt_cookie(row, key, store.db_version)
         except ValueError as e:
-            if first_error is None:
-                first_error = e
-    if not values and first_error is not None:
-        raise ValueError(str(first_error)) from None
+            errors.setdefault(row.name, e)
+    failed = [name for name in required if name in errors and name not in values]
+    if failed:
+        raise ValueError(str(errors[failed[0]])) from None
+    if not values and errors:
+        raise ValueError(str(next(iter(errors.values())))) from None
     return values

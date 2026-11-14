@@ -121,5 +121,18 @@ def test_decrypt_store_raises_when_no_row_decrypts():
     assert exc.value.__cause__ is None
 
 
+def test_decrypt_store_raises_when_every_session_key_row_fails():
+    # lastActiveOrg decrypts, but no sessionKey row does: a decrypt failure, not
+    # "no session cookie".
+    key = derive_key(PW)
+    store = CookieStore([
+        _row("sessionKey", _unpadded_v10(key.reveal()), 2),
+        _row("lastActiveOrg", encrypt_cookie(ORG_A, key.reveal(), ".claude.ai", 24), 1),
+    ], db_version=24)
+    with pytest.raises(ValueError) as exc:
+        decrypt_store(store, key)
+    assert str(exc.value).startswith("sessionKey: ")
+
+
 def test_decrypt_store_of_no_rows_is_empty():
     assert decrypt_store(CookieStore([], db_version=24), derive_key(PW)) == {}
