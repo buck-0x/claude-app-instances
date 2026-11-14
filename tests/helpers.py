@@ -206,7 +206,8 @@ class FakeSystemActions:
     survive SIGTERM (a watchdog in a foreground sleep) but not SIGKILL. A pid in
     `quit_results` gets that result from `send_quit` and does not vanish. `launch`
     records the target in `launched` and calls `on_launch(app_path)` when set.
-    `locks` maps watchdog lock paths to the pid they name, in memory only.
+    `locks` maps watchdog lock paths to the pid they name, in memory only; `read_lock`
+    and `remove_lock_if_names` use it.
     """
 
     def __init__(
