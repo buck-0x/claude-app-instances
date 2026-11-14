@@ -108,6 +108,8 @@ new-claude --launch-all
 
 An instance whose watchdog is waiting for a Claude update to install is
 skipped ("waiting for update"): its watchdog reopens it once the update lands.
+A launcher that fails to open is reported ("open failed") and the rest still
+launch; the command then exits non-zero.
 
 Remove a launcher (keeps its data by default):
 

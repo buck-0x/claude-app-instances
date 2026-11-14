@@ -214,5 +214,29 @@ wait "$UNRELATED" 2>/dev/null
 rm -f "$LOG_DIR/Claude LA One.lock"
 
 echo ""
+echo "Test 8: one failed open is reported and the rest still launch; exit is non-zero"
+reset_all
+rm -f "$ORDER"
+# An `open` earlier on PATH that fails for One's launcher and passes the rest on.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/open" <<'OPEN'
+#!/bin/zsh
+for a in "$@"; do
+  case "$a" in *"/Claude LA One.app") echo "open: simulated failure" >&2; exit 1 ;; esac
+done
+exec /usr/bin/open "$@"
+OPEN
+chmod +x "$TMP/bin/open"
+OUT=$(PATH="$TMP/bin:$PATH" "$NEW_CLAUDE" --launch-all --apps "$APPS" 2>/dev/null)
+RC=$?
+if print -r -- "$OUT" | grep -qxF "   • Claude LA One: open failed"; then ok "the failed open is reported"; else bad "the failed open is reported"; print -r -- "$OUT" | sed 's/^/      /'; fi
+if [ "$(launched "$OUT")" = "Claude LA One,Claude LA Three,Claude LA Two" ]; then
+  ok "the instances after it still launch"
+else
+  bad "the instances after it still launch (got: $(launched "$OUT"))"
+fi
+if [ "$RC" -ne 0 ]; then ok "exit status is non-zero"; else bad "exit status is non-zero"; fi
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

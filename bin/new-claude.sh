@@ -206,6 +206,8 @@ fi
 # An instance whose watchdog waits for a Claude update to install is skipped:
 # the watchdog reopens it once the update lands, and launching it now would
 # reopen it on the old version and keep blocking the install.
+# A launcher that fails to open is reported and the run goes on; the exit
+# status is then non-zero.
 if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
   LAUNCH_GAP=3
   ORDER_FILE="${CLAUDE_INSTANCES_CONFIG_DIR:-$HOME/.config/claude-instances}/order.txt"
@@ -257,6 +259,7 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
   done
   echo "Launching Claude instances:"
   launched=0
+  failed=0
   for name in "${ordered[@]}"; do
     app="${APP_OF[$name]}"
     datadir=$(launcher_data_dir "$app")
@@ -276,12 +279,18 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
     fi
     if [ "$launched" -gt 0 ]; then sleep "$LAUNCH_GAP"; fi
     echo "   • $name: launching"
-    open -n "$app"
-    launched=$((launched + 1))
+    # One failed open must not end the run (set -e): report it and go on.
+    if open -n "$app"; then
+      launched=$((launched + 1))
+    else
+      echo "   • $name: open failed"
+      failed=$((failed + 1))
+    fi
   done
   if [ "${#ordered[@]}" -eq 0 ]; then
     echo "   (no launchers found)"
   fi
+  [ "$failed" -eq 0 ] || exit 1
   exit 0
 fi
 
