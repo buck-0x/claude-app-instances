@@ -151,11 +151,34 @@ def test_log_says_update_wait(tmp_path):
         assert not log_says_update_wait(log), end
 
 
+GRACE_WAIT = ("2026-11-06 12:40:00 update installed on the default profile; waiting 20s for"
+              " ShipIt to relaunch Claude before launching")
+
+
+def test_log_says_update_wait_during_the_shipit_relaunch_grace(tmp_path):
+    # The default-folder watchdog's grace after an install counts as waiting: a
+    # launch then would race ShipIt's plain relaunch onto the same profile.
+    log = tmp_path / "X.log"
+    log.write_text(f"{UPDATE_PENDING}\n2026-11-06 12:40:00 update installed (100 -> 101)"
+                   f" after 40m0s; reopening instance\n{GRACE_WAIT}\n")
+    assert log_says_update_wait(log)
+    with open(log, "a") as f:
+        f.write("2026-11-06 12:40:05 launcher opened while waiting for the ShipIt relaunch;"
+                " ignored\n")
+        f.write("2026-11-06 12:40:05 launcher opened while instance is down; asked"
+                " watchdog pid 9 to reopen it\n")
+    assert log_says_update_wait(log)
+    with open(log, "a") as f:
+        f.write("2026-11-06 12:40:20 launching (101) with --user-data-dir=/x\n")
+    assert not log_says_update_wait(log)
+
+
 def test_launcher_still_logs_the_update_wait_wording():
-    from claude_instances.processes import _UPDATE_WAIT_NOISE
+    from claude_instances.processes import _UPDATE_WAIT_NOISE, SHIPIT_GRACE_TEXT
     script = (Path(__file__).parent.parent / "bin/new-claude.sh").read_text()
-    for text in ("update pending (", "but not installed", *_UPDATE_WAIT_NOISE):
+    for text in ("update pending (", "but not installed", *_UPDATE_WAIT_NOISE,
+                 SHIPIT_GRACE_TEXT):
         assert text in script, text
-    # zsh --launch-all filters with the same strings.
-    for text in _UPDATE_WAIT_NOISE:
+    # zsh --launch-all filters and matches with the same strings.
+    for text in (*_UPDATE_WAIT_NOISE, SHIPIT_GRACE_TEXT):
         assert f"-e '{text}'" in script, text

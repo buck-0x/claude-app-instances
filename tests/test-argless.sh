@@ -184,7 +184,21 @@ kill_stub
 for i in {1..30}; do log_has "update pending (" && break; sleep 0.5; done
 log_has "update pending (" || bad "precondition: watchdog waits for the update install"
 install_update 101
-sleep 1.2
+for i in {1..15}; do log_has "for ShipIt to relaunch Claude before launching" && break; sleep 0.2; done
+if log_has "waiting 4s for ShipIt to relaunch Claude before launching"; then
+  ok "watchdog waits a grace period for ShipIt's relaunch"
+else
+  bad "watchdog waits a grace period for ShipIt's relaunch"
+fi
+# Opening the launcher during that grace (TUI l or a, the Dock app, a click)
+# must not cut it short.
+"$LAUNCHER_DEFAULT" &
+sleep 1
+if log_has "launcher opened while waiting for the ShipIt relaunch; ignored"; then
+  ok "a launcher opened during the grace is ignored"
+else
+  bad "a launcher opened during the grace is ignored"
+fi
 start_argless
 sleep 6
 if log_has "adopted plain Claude (pid " && log_has ") on the default profile"; then
@@ -207,6 +221,37 @@ else
   bad "watchdog stands down once the adopted plain Claude quits"
 fi
 if [ "$(stub_count)" = "0" ]; then ok "nothing reopened the plain Claude"; else bad "nothing reopened the plain Claude"; fi
+reset_all
+
+echo ""
+echo "Test 8: ShipIt's plain relaunch arriving during the update wait (the observed order) is adopted"
+# As in the real incident: the default instance quits for a pending update and
+# the watchdog waits; ShipIt installs and relaunches Claude with no
+# --user-data-dir before the watchdog's next poll sees the install.
+"$STUB_BIN" --user-data-dir="$CLAUDE_LAUNCHER_DEFAULT_DATA_DIR" &
+sleep 1
+"$LAUNCHER_DEFAULT" &
+for i in {1..20}; do log_has "adopting already-running instance" && break; sleep 0.5; done
+log_has "adopting already-running instance" || bad "precondition: default launcher adopted its instance"
+stage_update 102
+kill_stub
+for i in {1..30}; do log_has "update pending (" && break; sleep 0.5; done
+log_has "update pending (" || bad "precondition: watchdog waits for the update install"
+start_argless
+install_update 102
+sleep 5
+if log_has "adopted plain Claude (pid " && log_has ") on the default profile"; then
+  ok "watchdog adopts the plain relaunch from the update wait"
+else
+  bad "watchdog adopts the plain relaunch from the update wait"
+  sed 's/^/      /' "$DEFAULT_LOG" 2>/dev/null
+fi
+if [ "$(stub_count)" = "1" ] && [ "$(argless_stub_count)" = "1" ]; then
+  ok "exactly one stub process"
+else
+  bad "exactly one stub process (count=$(stub_count), argless=$(argless_stub_count))"
+fi
+if ! log_has "launching ("; then ok "nothing launched on the default profile"; else bad "nothing launched on the default profile"; fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

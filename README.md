@@ -191,10 +191,14 @@ Details worth knowing:
   `--user-data-dir`, so that Claude runs on the default profile
   (`~/Library/Application Support/Claude`). The watchdog of the launcher whose
   data folder is (or resolves to) that folder adopts it as its instance
-  ("adopted plain Claude ... on the default profile") and waits a grace period
-  for it before launching its own, so the profile never gets two processes.
-  Other watchdogs leave a plain Claude alone, and nothing ever quits one by
-  itself.
+  ("adopted plain Claude ... on the default profile"). After an install it waits
+  a grace period (20 s) for that relaunch before launching its own; opening the
+  launcher meanwhile does not cut the wait short, and launch all skips the
+  instance during it. That avoids two processes on the profile in the usual
+  case; if ShipIt takes longer than the grace, both can still end up running
+  (the TUI then shows DUPLICATE). Other watchdogs leave a plain Claude alone,
+  and nothing ever quits one by itself. Launchers built before this need a
+  rebuild (the TUI marks them "⚠ rebuild").
 - `new-claude --reopen-all` reopens any instance that isn't running; use it
   after upgrading launchers, or any time a collapse already happened.
 - Watchdogs end at logout; launchers reopened by macOS "resume windows" at

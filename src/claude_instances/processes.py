@@ -24,10 +24,16 @@ _DATA_DIR_FLAG = "--user-data-dir="
 # How many trailing watchdog log lines decide whether it waits for an update install.
 # `new-claude --launch-all` reads the same number with the same rule.
 UPDATE_WAIT_LOG_LINES = 200
-_UPDATE_WAIT_START = re.compile(r"update pending \(.*but not installed")
-# Lines a watchdog in update wait may log without leaving it.
+# After an install, the default-folder watchdog waits a grace period for ShipIt's
+# plain relaunch and logs this; a launch during it would race that relaunch onto
+# the same profile, so it counts as waiting too.
+SHIPIT_GRACE_TEXT = "for ShipIt to relaunch Claude before launching"
+_UPDATE_WAIT_START = re.compile(
+    r"update pending \(.*but not installed|" + re.escape(SHIPIT_GRACE_TEXT))
+# Lines a watchdog in update wait (or that grace) may log without leaving it.
 _UPDATE_WAIT_NOISE = ("still waiting for update install",
-                      "launcher opened while instance is down")
+                      "launcher opened while instance is down",
+                      "launcher opened while waiting for the ShipIt relaunch")
 
 
 @dataclass(frozen=True)
@@ -193,8 +199,10 @@ def log_says_update_wait(log_path: Path) -> bool:
     The watchdog logs `update pending (...) but not installed` as it starts waiting,
     then only heartbeats (and notes from a launcher opened meanwhile) until it
     reopens or exits, each of which logs another line. So the wait holds when the
-    last log line other than those is the `update pending` one. Callers also check
-    that the watchdog is alive: a dead one waits for nothing.
+    last log line other than those is the `update pending` one. The default-folder
+    watchdog's grace for ShipIt's relaunch after an install (`SHIPIT_GRACE_TEXT`)
+    counts the same way. Callers also check that the watchdog is alive: a dead one
+    waits for nothing.
     """
     try:
         with open(log_path, encoding="utf-8", errors="replace") as f:

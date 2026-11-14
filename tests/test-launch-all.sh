@@ -238,5 +238,51 @@ fi
 if [ "$RC" -ne 0 ]; then ok "exit status is non-zero"; else bad "exit status is non-zero"; fi
 
 echo ""
+echo "Test 9: an instance whose watchdog waits for ShipIt's relaunch after an install is skipped"
+reset_all
+# A launch during that grace would race ShipIt's plain relaunch onto the same
+# profile. Same stand-in watchdog as Test 5; the log ends with the grace line
+# and the notes a launcher opened meanwhile leaves.
+start_fake_watchdog "$(launcher_of "Claude LA Two")"
+ln -sf "$FAKE_WD" "$LOG_DIR/Claude LA Two.lock"
+{
+  print -r -- "$(date '+%Y-%m-%d %H:%M:%S') update installed (100 -> 101) after 5m0s; reopening instance"
+  print -r -- "$(date '+%Y-%m-%d %H:%M:%S') update installed on the default profile; waiting 20s for ShipIt to relaunch Claude before launching"
+  print -r -- "$(date '+%Y-%m-%d %H:%M:%S') launcher opened while waiting for the ShipIt relaunch; ignored"
+  print -r -- "$(date '+%Y-%m-%d %H:%M:%S') launcher opened while instance is down; asked watchdog pid $FAKE_WD to reopen it"
+} > "$LOG_DIR/Claude LA Two.log"
+OUT=$("$NEW_CLAUDE" --launch-all --apps "$APPS")
+if print -r -- "$OUT" | grep -qxF "   • Claude LA Two: waiting for update; skipped"; then
+  ok "Two is skipped while its watchdog waits for ShipIt's relaunch"
+else
+  bad "Two is skipped while its watchdog waits for ShipIt's relaunch"
+  print -r -- "$OUT" | sed 's/^/      /'
+fi
+kill "$FAKE_WD" 2>/dev/null
+wait "$FAKE_WD" 2>/dev/null
+rm -f "$LOG_DIR/Claude LA Two.lock" "$LOG_DIR/Claude LA Two.log"
+
+echo ""
+echo "Test 10: two launchers taking over a stale lock at once leave one watchdog"
+reset_all
+sleep 0 &
+DEAD=$!
+wait "$DEAD" 2>/dev/null
+ln -sf "$DEAD" "$LOG_DIR/Claude LA Three.lock"
+"$(launcher_of "Claude LA Three")" &
+"$(launcher_of "Claude LA Three")" &
+sleep 6
+WDS=$(watchdog_pids_for "$(launcher_of "Claude LA Three")" | wc -l | tr -d ' ')
+if [ "$WDS" = "1" ]; then ok "one watchdog survives"; else bad "one watchdog survives (count=$WDS)"; fi
+if [ "$(readlink "$LOG_DIR/Claude LA Three.lock" 2>/dev/null)" = "$(watchdog_pids_for "$(launcher_of "Claude LA Three")" | head -n1)" ]; then
+  ok "the lock names the surviving watchdog"
+else
+  bad "the lock names the surviving watchdog"
+fi
+if [ "$(stub_count)" = "1" ]; then ok "one instance running"; else bad "one instance running (count=$(stub_count))"; fi
+reset_all
+rm -f "$LOG_DIR/Claude LA Three.lock"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

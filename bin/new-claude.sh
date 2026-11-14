@@ -222,8 +222,9 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
   # True when $1's watchdog is alive (its lock names a zsh process running
   # launcher app $2's script; see is_watchdog_cmd) and its log says it waits for an update
   # install: the last of the last 200 lines, heartbeats and launcher notes
-  # aside, is the "update pending ... but not installed" line. Same rule as the
-  # instances TUI (processes.log_says_update_wait).
+  # aside, is the "update pending ... but not installed" line, or the default
+  # watchdog's grace line while it waits for ShipIt's relaunch after an
+  # install. Same rule as the instances TUI (processes.log_says_update_wait).
   waiting_for_update() {
     local name="$1" script="$2/Contents/MacOS/launcher" pid="" cmd=""
     pid=$(readlink "$WATCHDOG_LOG_DIR/$name.lock" 2>/dev/null) || return 1
@@ -232,7 +233,9 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
     is_watchdog_cmd "$cmd" "$script" || return 1
     tail -n 200 "$WATCHDOG_LOG_DIR/$name.log" 2>/dev/null \
       | grep -v -e 'still waiting for update install' -e 'launcher opened while instance is down' \
-      | tail -n 1 | grep -q 'update pending (.*but not installed'
+          -e 'launcher opened while waiting for the ShipIt relaunch' \
+      | tail -n 1 \
+      | grep -q -e 'update pending (.*but not installed' -e 'for ShipIt to relaunch Claude before launching'
   }
   if [ "$APPS_GIVEN" -eq 1 ]; then
     scan_dirs=("$APPS_DIR")
@@ -413,6 +416,7 @@ if [ -n "$DEFAULT_DATA_DIR" ] && { [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] ||
 fi
 adopted_plain=""    # the plain Claude pid whose adoption was last logged
 WATCHING=0          # 1 once this process holds the lock
+SHIPIT_GRACE=0      # 1 while waiting for ShipIt's plain relaunch (see await_plain_relaunch)
 
 mkdir -p "$LOG_DIR"
 
@@ -600,11 +604,25 @@ launch_instance() {
 # --user-data-dir), which runs on the default folder. The default-folder
 # watchdog gives it up to GRACE seconds to appear before launching its own, so
 # the profile never gets two processes. Succeeds when an instance is running.
+# The wait runs its full GRACE even when the launcher is opened meanwhile (TUI l
+# or a, the Dock app, a click): the USR1 trap logs and ignores it while
+# SHIPIT_GRACE is set. The launch-alls skip a row whose log ends with this line.
 await_plain_relaunch() {
   [ "$IS_DEFAULT" -eq 1 ] || return 1
+  local start="" waited=0
   log "update installed on the default profile; waiting ${GRACE}s for ShipIt to relaunch Claude before launching"
-  nap "$GRACE"
-  instance_running
+  start=$(date +%s)
+  SHIPIT_GRACE=1
+  while ! instance_running; do
+    waited=$(( $(date +%s) - start ))
+    if [ "$waited" -ge "$GRACE" ]; then
+      SHIPIT_GRACE=0
+      return 1
+    fi
+    nap 1
+  done
+  SHIPIT_GRACE=0
+  return 0
 }
 
 # Reopen after an installed update: adopt ShipIt's plain relaunch when it comes
@@ -670,12 +688,22 @@ if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
     log "stale lock names pid $oldpid, which is not this launcher's watchdog; taking it over"
   fi
-  rm -f "$LOCK"
-  ln -s "$$" "$LOCK" 2>/dev/null || exit 0
+  # Take the stale lock over by an atomic rename (never rm then ln, which lets a
+  # second launcher delete our fresh lock). Two launchers taking over at once
+  # both rename; after a settle only the last one's pid is in the lock, and the
+  # other exits.
+  ln -s "$$" "$LOCK.$$" 2>/dev/null || exit 0
+  if ! mv -f -h "$LOCK.$$" "$LOCK" 2>/dev/null; then
+    rm -f "$LOCK.$$"
+    exit 0
+  fi
+  sleep 1
+  [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] || exit 0
 fi
-trap 'log "watchdog (pid $$) exiting"; rm -f "$LOCK"' EXIT
+# Remove the lock on exit only while it is still ours.
+trap 'log "watchdog (pid $$) exiting"; [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
 trap 'log "watchdog stopped by signal"; exit 0' INT TERM
-trap 'REOPEN_REQUESTED=1; log "reopen requested by launcher"' USR1
+trap 'if [ "$SHIPIT_GRACE" -eq 1 ]; then log "launcher opened while waiting for the ShipIt relaunch; ignored"; else REOPEN_REQUESTED=1; log "reopen requested by launcher"; fi' USR1
 WATCHING=1
 
 log "watchdog started (pid $$; poll=${POLL}s grace=${GRACE}s; shipit=$SHIPIT_DIR)"
@@ -780,6 +808,16 @@ while :; do
     log "update pending ($upd) but not installed: Claude quit this instance to install it. ShipIt waits until every instance has quit; still running: $(other_instances)"
     if ! wait_for_update_install; then
       log "reopen after update wait failed; exiting"
+      exit 1
+    fi
+  elif cur=$(bundle_version); [ "$cur" != "$last_ver" ] && [ "$cur" != "$relaunched_for" ]; then
+    # ShipIt swaps the bundle and then clears its staging: an install that
+    # landed between the version and staging checks above is an update, not a
+    # user quit.
+    log "update detected ($last_ver -> $cur) as its staging cleared; reopening instance"
+    relaunched_for="$cur"
+    if ! reopen_after_update; then
+      log "reopen after update failed; exiting"
       exit 1
     fi
   elif [ "$REOPEN_REQUESTED" -eq 1 ]; then
