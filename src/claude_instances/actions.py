@@ -198,22 +198,24 @@ def launch_refusal(
 
 
 def clear_stale_lock(
-    launcher: Launcher, lines: list[ProcessLine], actions: SystemActions, log_dir: Path
+    launcher: Launcher, lock_pid: int | None, lines: list[ProcessLine],
+    actions: SystemActions, log_dir: Path,
 ) -> str | None:
     """Remove `launcher`'s watchdog lock when `lines` show its pid is no watchdog of it.
 
     A watchdog killed without its EXIT trap (SIGKILL, a crash, a forced logout or
     reboot) leaves its lock behind, and a reused pid then looks alive. The launcher
     would take that process for its watchdog, signal it and exit without launching.
+    `lock_pid` is what the lock named when read BEFORE `lines`: a live watchdog it
+    names is then in `lines`, so a watchdog that starts between the two reads never
+    loses its lock (`remove_lock_if_names` leaves a lock that names another pid).
     Returns None when the lock is absent, live or removed; otherwise why not launching.
     """
-    lock = log_dir / f"{launcher.name}.lock"
-    pid = actions.read_lock(lock)
-    if pid is None or pid in watchdog_pids(lines, launcher.script_path):
+    if lock_pid is None or lock_pid in watchdog_pids(lines, launcher.script_path):
         return None
-    if actions.remove_lock_if_names(lock, pid):
+    if actions.remove_lock_if_names(log_dir / f"{launcher.name}.lock", lock_pid):
         return None
-    return f"stale watchdog lock (pid {pid}) could not be removed; not launching"
+    return f"stale watchdog lock (pid {lock_pid}) could not be removed; not launching"
 
 
 def guarded_launch(
@@ -225,12 +227,14 @@ def guarded_launch(
 ) -> ActionResult:
     """Open `launcher` with `open -n` only if a fresh `ps` read shows it is safe.
 
-    A failed read refuses: it means "cannot verify", never "nothing running". A
-    watchdog lock in `log_dir` (default `paths.log_dir()`) whose pid that read does
-    not show as this launcher's watchdog is removed first (see `clear_stale_lock`).
+    A failed read refuses: it means "cannot verify", never "nothing running". The
+    watchdog lock in `log_dir` (default `paths.log_dir()`) is read first; when the
+    `ps` read that follows does not show its pid as this launcher's watchdog, it is
+    removed (see `clear_stale_lock`).
     """
     if log_dir is None:
         log_dir = paths.log_dir()
+    lock_pid = actions.read_lock(log_dir / f"{launcher.name}.lock")
     try:
         lines = actions.processes()
     except _PS_ERRORS:
@@ -238,7 +242,7 @@ def guarded_launch(
     procs = main_processes(lines, claude_binary(launcher.claude_app))
     reason = launch_refusal(launcher, procs, default_data_dir, rearm)
     if reason is None:
-        reason = clear_stale_lock(launcher, lines, actions, log_dir)
+        reason = clear_stale_lock(launcher, lock_pid, lines, actions, log_dir)
     if reason is not None:
         return ActionResult(False, reason)
     return actions.launch(launcher.app_path)

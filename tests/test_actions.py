@@ -313,7 +313,7 @@ def test_guarded_launch_rereads_ps_and_refuses_running():
     fake = FakeSystemActions(ps=[main_line(501, target.data_dir)], alive={501})
     r = guarded_launch(target, fake, DEFAULT)
     assert r == ActionResult(False, "already running")
-    assert fake.calls[0] == ("processes",) and fake.launched == []
+    assert ("processes",) in fake.calls and fake.launched == []
 
 
 def test_guarded_launch_refuses_when_ps_cannot_be_read():
@@ -384,6 +384,27 @@ def test_guarded_launch_without_lock_reads_it_and_launches():
     fake = FakeSystemActions()
     assert guarded_launch(target, fake, DEFAULT, log_dir=LOGS).ok
     assert ("read_lock", LOCK) in fake.calls
+    assert calls_named(fake, "remove_lock_if_names") == []
+
+
+def test_guarded_launch_reads_the_lock_before_ps():
+    # A watchdog that writes its lock after the ps read would be missing from that
+    # read, and its live lock removed; reading the lock first rules that out.
+    target = launcher(script=WD)
+
+    class StartsDuringLaunch(FakeSystemActions):
+        def processes(self) -> list[ProcessLine]:
+            lines = super().processes()
+            if LOCK not in self.locks:  # a watchdog starts right after this ps read
+                self.locks[LOCK] = 508
+                self.ps.append(wd_line(508))
+            return lines
+
+    fake = StartsDuringLaunch()
+    assert guarded_launch(target, fake, DEFAULT, log_dir=LOGS).ok
+    assert fake.calls.index(("read_lock", LOCK)) < fake.calls.index(("processes",))
+    assert fake.locks == {LOCK: 508}
+    assert calls_named(fake, "remove_lock_if_names") == []
 
 
 def test_mac_read_lock_on_disk(tmp_path):
