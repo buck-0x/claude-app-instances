@@ -742,8 +742,10 @@ fi
 # Ad-hoc sign the LAUNCHER (a brand-new app we made) — never Claude's bundle.
 codesign --force --sign - "$APP_PATH" >/dev/null 2>&1 || true
 
-# Refresh Launch Services so the name/icon register.
-LSR="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# Refresh Launch Services so the name/icon register. CLAUDE_LAUNCHER_LSREGISTER
+# is a test hook: tests point it at a stub so a temp launcher never gets
+# registered with the real LaunchServices database.
+LSR="${CLAUDE_LAUNCHER_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 "$LSR" -f "$APP_PATH" >/dev/null 2>&1 || true
 
 echo "Done."
