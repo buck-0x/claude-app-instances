@@ -713,6 +713,14 @@ wait_for_update_install() {
       launch_and_verify; return
     fi
     if ! upd=$(update_pending); then
+      # ShipIt swaps the bundle and then clears its staging; re-read the version
+      # so an install that landed between the two checks counts as installed.
+      cur=$(bundle_version)
+      if [ "$cur" != "$last_ver" ]; then
+        log "update installed ($last_ver -> $cur) after $(fmt_dur $waited); reopening instance"
+        relaunched_for="$cur"
+        reopen_after_update; return
+      fi
       log "pending update went away without installing (still $cur) after $(fmt_dur $waited); reopening instance"
       launch_and_verify; return
     fi
