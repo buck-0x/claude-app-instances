@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from claude_instances.launchers import discover_launchers
+from claude_instances.launchers import CURRENT_LAUNCHER_BODY, discover_launchers
 
 REPO = Path(__file__).resolve().parent.parent
 NEW_CLAUDE = REPO / "bin/new-claude.sh"
@@ -44,5 +44,7 @@ def test_generated_launcher_has_argless_rule(tmp_path):
     assert launcher.has_argless_rule
     assert launcher.data_dir == support / "claude-gen-test"
     assert launcher.claude_app == fake_app
+    # The body version new-claude bakes in is the one the TUI calls current.
+    assert launcher.body_version == CURRENT_LAUNCHER_BODY and launcher.is_current
     # Registration went to the stub, for the temp launcher only.
     assert calls.read_text().splitlines() == [f"-f {tmp_path / 'Apps/Claude GenTest.app'}"]

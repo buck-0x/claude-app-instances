@@ -30,6 +30,11 @@ SUPPORT_DIR="$HOME/Library/Application Support"
 # Claude's default data folder (used by a Claude started with no
 # --user-data-dir). CLAUDE_LAUNCHER_DEFAULT_DATA_DIR is a test hook.
 DEFAULT_DATA_DIR="${CLAUDE_LAUNCHER_DEFAULT_DATA_DIR:-$SUPPORT_DIR/Claude}"
+# Version of the generated launcher body, baked into each header as
+# LAUNCHER_BODY=<n>. Bump it when the body changes in a way that needs a rebuild,
+# together with CURRENT_LAUNCHER_BODY in src/claude_instances/launchers.py; the
+# instances TUI flags launchers with an older body.
+LAUNCHER_BODY=3
 
 # ---- parse arguments ---------------------------------------------------------
 DISPLAY_NAME=""
@@ -366,6 +371,7 @@ cat > "$APP_PATH/Contents/MacOS/launcher" <<HDR
 CLAUDE_APP="$CLAUDE_APP"
 DATA_DIR="$DATA_DIR"
 DEFAULT_DATA_DIR="$DEFAULT_DATA_DIR"
+LAUNCHER_BODY=$LAUNCHER_BODY
 INSTANCE_NAME="$DISPLAY_NAME"
 HDR
 

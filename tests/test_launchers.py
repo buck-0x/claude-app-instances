@@ -2,6 +2,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from claude_instances.launchers import (
+    CURRENT_LAUNCHER_BODY,
     Launcher,
     discover_launchers,
     scan_launchers,
@@ -29,6 +30,19 @@ def test_discovers_all_formats(tmp_path):
     assert (a.name, a.app_path, a.data_dir) == (
         "Claude Alpha", tmp_path / "Claude Alpha.app", tmp_path / "AS/Claude-Alpha")
     assert o.claude_app == Path("/Applications/Claude.app")
+
+
+def test_body_version_marks_current_and_outdated_launchers(tmp_path):
+    make_launcher_app(tmp_path, "Claude A", tmp_path / "AS/A")
+    make_launcher_app(tmp_path, "Claude B", tmp_path / "AS/B", body=None)  # ed4ffbe era
+    make_launcher_app(tmp_path, "Claude C", tmp_path / "AS/C", body=CURRENT_LAUNCHER_BODY - 1)
+    make_launcher_app(tmp_path, "Claude M", tmp_path / "AS/M", fmt="watchdog")
+    make_launcher_app(tmp_path, "Claude O", tmp_path / "AS/O", fmt="oneshot")
+    a, b, c, m, o = discover_launchers([tmp_path])
+    assert a.body_version == CURRENT_LAUNCHER_BODY and a.is_current
+    assert b.body_version == 0 and not b.is_current
+    assert c.body_version == CURRENT_LAUNCHER_BODY - 1 and not c.is_current
+    assert not m.is_current and not o.is_current
 
 
 def test_ignores_chatgpt_and_foreign_apps(tmp_path):

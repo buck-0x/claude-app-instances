@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from claude_instances.actions import ActionResult
 from claude_instances.crypto import derive_key
+from claude_instances.launchers import CURRENT_LAUNCHER_BODY
 from claude_instances.httpclient import ACCOUNT_PATH, ORGS_PATH, HttpResult
 from claude_instances.processes import ProcessLine
 from claude_instances.secret import Secret
@@ -136,11 +137,13 @@ def make_launcher_app(
     fmt: Literal["argless", "watchdog", "oneshot"] = "argless",
     claude_app: Path = Path("/Applications/Claude.app"),
     default_data_dir: Path | None = None,
+    body: int | None = CURRENT_LAUNCHER_BODY,
 ) -> Path:
     """Write `<apps_dir>/<name>.app` shaped like a `new-claude` launcher; return its path.
 
     `argless` and `watchdog` mirror the generated header (argless adds the
-    DEFAULT_DATA_DIR line); `oneshot` is the old single inline `open` line.
+    DEFAULT_DATA_DIR line, and a `LAUNCHER_BODY=<body>` line unless `body` is None);
+    `oneshot` is the old single inline `open` line.
     """
     app = apps_dir / f"{name}.app"
     (app / "Contents/MacOS").mkdir(parents=True, exist_ok=True)
@@ -155,15 +158,17 @@ def make_launcher_app(
             "CFBundlePackageType": "APPL",
         }, f)
     if fmt == "oneshot":
-        body = f'exec open -n -a "{claude_app}" --args --user-data-dir="{data_dir}"\n'
+        script = f'exec open -n -a "{claude_app}" --args --user-data-dir="{data_dir}"\n'
     else:
-        body = f'CLAUDE_APP="{claude_app}"\nDATA_DIR="{data_dir}"\n'
+        script = f'CLAUDE_APP="{claude_app}"\nDATA_DIR="{data_dir}"\n'
         if fmt == "argless":
             default = default_data_dir or data_dir.parent / "Claude"
-            body += f'DEFAULT_DATA_DIR="{default}"\n'
-        body += f'INSTANCE_NAME="{name}"\n\n'
-        body += 'open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR"\n'
-    (app / "Contents/MacOS/launcher").write_text("#!/bin/zsh\n" + body)
+            script += f'DEFAULT_DATA_DIR="{default}"\n'
+            if body is not None:
+                script += f"LAUNCHER_BODY={body}\n"
+        script += f'INSTANCE_NAME="{name}"\n\n'
+        script += 'open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR"\n'
+    (app / "Contents/MacOS/launcher").write_text("#!/bin/zsh\n" + script)
     return app
 
 

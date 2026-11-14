@@ -21,6 +21,7 @@ from claude_instances.backend import DECRYPT_ERROR, Backend
 from claude_instances.paths import RESTORE_FILE
 from claude_instances.processes import ProcessLine
 from claude_instances.screens import (
+    OUTDATED_NOTE,
     SESSION_CAVEAT,
     ConfirmScreen,
     DetailsScreen,
@@ -350,6 +351,25 @@ async def test_quit_that_fails_offers_rearm(backend, fake):
         await pilot.press("y")
         await finish_workers(pilot)
         assert "did not quit" in pilot.app.status_text and "press w" in pilot.app.status_text
+
+
+# ---- outdated launchers ------------------------------------------------------------------
+
+async def test_outdated_launcher_is_flagged_in_the_table_and_details(tmp_path):
+    world = World(tmp_path)
+    # Rebuild Claude I's launcher with an older body (the ed4ffbe era: no body line).
+    make_launcher_app(world.apps, "Claude I", world.dirs["Claude I"],
+                      claude_app=world.claude_app, default_data_dir=world.default_data_dir,
+                      body=None)
+    async with InstancesApp(world.backend(None)).run_test() as pilot:
+        table = pilot.app.query_one(DataTable)
+        assert "rebuild" in str(table.get_row("Claude I")[1])
+        assert "rebuild" not in str(table.get_row("Claude C")[1])
+        select(pilot, "Claude I")
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, DetailsScreen)
+        assert OUTDATED_NOTE in pilot.app.screen.text
 
 
 # ---- a plain Claude with no launcher -----------------------------------------------------

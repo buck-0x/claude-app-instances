@@ -22,6 +22,13 @@ _DEFAULT_DATA_DIR_LINE = re.compile(r'^DEFAULT_DATA_DIR="(.*)"$', re.MULTILINE)
 _CLAUDE_APP_LINE = re.compile(r'^CLAUDE_APP="(.*)"$', re.MULTILINE)
 _INLINE_DATA_DIR = re.compile(r'--user-data-dir="([^"]*)"')
 _INLINE_CLAUDE_APP = re.compile(r'open -n -a "([^"]*)"')
+_BODY_LINE = re.compile(r"^LAUNCHER_BODY=(\d+)$", re.MULTILINE)
+
+# The launcher body version `new-claude` bakes into each header as LAUNCHER_BODY=<n>
+# (keep it equal to LAUNCHER_BODY in bin/new-claude.sh). Launchers without the line,
+# or with a lower number, lack the stale-lock check and the plain-Claude adoption
+# and want a rebuild.
+CURRENT_LAUNCHER_BODY = 3
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,12 @@ class Launcher:
     claude_app: Path
     is_watchdog: bool  # has a DATA_DIR= header line, so it holds the per-instance lock
     has_argless_rule: bool  # has a DEFAULT_DATA_DIR= header line
+    body_version: int = 0  # LAUNCHER_BODY= header value; 0 when missing
+
+    @property
+    def is_current(self) -> bool:
+        """A watchdog launcher whose body is the one `new-claude` builds today."""
+        return self.is_watchdog and self.body_version >= CURRENT_LAUNCHER_BODY
 
 
 def _first(pattern: re.Pattern[str], text: str) -> str:
@@ -55,6 +68,12 @@ def parse_launcher_script(
         _DATA_DIR_LINE.search(text) is not None,
         _DEFAULT_DATA_DIR_LINE.search(text) is not None,
     )
+
+
+def parse_body_version(text: str) -> int:
+    """The launcher script's LAUNCHER_BODY= value, or 0 when it has none."""
+    match = _BODY_LINE.search(text)
+    return int(match.group(1)) if match else 0
 
 
 def _read_launcher(app: Path, default_claude_app: Path) -> Launcher | None:
@@ -80,7 +99,8 @@ def _read_launcher(app: Path, default_claude_app: Path) -> Launcher | None:
     name = info.get("CFBundleDisplayName")
     if not isinstance(name, str) or not name:
         name = app.stem
-    return Launcher(name, app, script, data_dir, claude_app, is_watchdog, has_argless_rule)
+    return Launcher(name, app, script, data_dir, claude_app, is_watchdog, has_argless_rule,
+                    parse_body_version(text))
 
 
 def scan_launchers(

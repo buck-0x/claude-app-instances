@@ -21,6 +21,9 @@ from claude_instances.launchers import rebuild_command
 from claude_instances.snapshot import InstanceState
 
 LOG_TAIL_LINES = 20
+# Why an older launcher body wants a rebuild (the Rebuild line has the command).
+OUTDATED_NOTE = ("older launcher: rebuild it for the update and lock fixes"
+                 " (adopting ShipIt's plain relaunch, stale-lock handling)")
 SESSION_CAVEAT = (
     "A present cookie means the app believes it is signed in; a server-side revocation"
     " shows only when the app next talks to the server."
@@ -120,7 +123,9 @@ def details_text(row: InstanceState, support_dir: Path, log_dir: Path) -> str:
     if not launcher.is_watchdog:
         lines.append("Note:             old one-shot launcher")
     elif not launcher.has_argless_rule:
-        lines.append("Note:             launcher predates the argless rule")
+        lines.append("Note:             launcher predates the argless rule; " + OUTDATED_NOTE)
+    elif not launcher.is_current:
+        lines.append("Note:             " + OUTDATED_NOTE)
     if row.update_waiting:
         blockers = ", ".join(row.update_blockers) or "nothing running now"
         lines.append(f"Update:           waiting for a Claude update to install;"

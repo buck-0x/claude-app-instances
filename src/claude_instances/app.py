@@ -126,6 +126,15 @@ def guarded(label: str) -> Callable:
 
 # ---- cell text ------------------------------------------------------------------------
 
+def name_cell(row: InstanceState) -> Text:
+    """The name, flagged when the launcher's body is older than new-claude builds now
+    (it may double the default profile after an update; see details)."""
+    text = Text(row.name)
+    if not row.launcher.is_current:
+        text.append("  ⚠ rebuild", style="bold yellow")
+    return text
+
+
 def state_cell(row: InstanceState) -> Text:
     if row.is_duplicate:
         return Text("DUPLICATE", style="bold red")
@@ -175,7 +184,7 @@ def row_cells(row: InstanceState, now: datetime) -> tuple:
     u = row.usage
     return (
         str(row.position + 1),
-        row.name,
+        name_cell(row),
         state_cell(row),
         account_cell(row),
         usage_cell(u.five_hour_pct if u else None, u.five_hour_resets_at if u else None, u, now),
