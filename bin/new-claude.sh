@@ -105,11 +105,33 @@ instance_running_for() {
     END { exit f ? 0 : 1 }'
 }
 
+# True when command line $1 is zsh running launcher script $2: the first word is
+# a zsh interpreter (zsh or a path ending /zsh) and the rest is the whole script
+# path, alone or followed by a space. A pager or editor viewing the script never
+# counts. Same rule as the instances TUI (processes.is_watchdog_command).
+is_watchdog_cmd() {
+  local cmd="$1" script="$2" interp="" rest=""
+  cmd="${cmd#"${cmd%%[! ]*}"}"
+  case "$cmd" in *" "*) ;; *) return 1 ;; esac
+  interp="${cmd%% *}"; rest="${cmd#* }"
+  [ "${interp:t}" = "zsh" ] || return 1
+  [ "$rest" = "$script" ] || [ "${rest[1,$(( ${#script} + 1 ))]}" = "$script " ]
+}
+
+# Pids of zsh processes running launcher script $1 (see is_watchdog_cmd).
+watchdog_pids_of() {
+  local pid="" cmd=""
+  ps -axo pid=,command= | while read -r pid cmd; do
+    if is_watchdog_cmd "$cmd" "$1"; then print -r -- "$pid"; fi
+  done
+  return 0
+}
+
 # Kill any resident watchdog process for a launcher app path (never the
-# Claude instance itself; its command line does not contain the launcher path).
+# Claude instance itself, nor a pager or editor viewing the script).
 kill_watchdogs_for() {
   local script="$1/Contents/MacOS/launcher" pids=""
-  pids=$(ps -axo pid=,command= | MS="$script" awk 'BEGIN { s = ENVIRON["MS"] } index($0, s) { print $1 }') || true
+  pids=$(watchdog_pids_of "$script") || true
   if [ -n "$pids" ]; then
     echo "Stopping resident watchdog for $1"
     print -r -- "$pids" | xargs kill 2>/dev/null || true
@@ -188,8 +210,8 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
   LAUNCH_GAP=3
   ORDER_FILE="${CLAUDE_INSTANCES_CONFIG_DIR:-$HOME/.config/claude-instances}/order.txt"
   WATCHDOG_LOG_DIR="$HOME/Library/Logs/claude-instances"
-  # True when $1's watchdog is alive (its lock names a process whose command line
-  # holds launcher app $2's script) and its log says it waits for an update
+  # True when $1's watchdog is alive (its lock names a zsh process running
+  # launcher app $2's script; see is_watchdog_cmd) and its log says it waits for an update
   # install: the last of the last 200 lines, heartbeats and launcher notes
   # aside, is the "update pending ... but not installed" line. Same rule as the
   # instances TUI (processes.log_says_update_wait).
@@ -198,7 +220,7 @@ if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
     pid=$(readlink "$WATCHDOG_LOG_DIR/$name.lock" 2>/dev/null) || return 1
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
-    case " $cmd " in *" $script "*) ;; *) return 1 ;; esac
+    is_watchdog_cmd "$cmd" "$script" || return 1
     tail -n 200 "$WATCHDOG_LOG_DIR/$name.log" 2>/dev/null \
       | grep -v -e 'still waiting for update install' -e 'launcher opened while instance is down' \
       | tail -n 1 | grep -q 'update pending (.*but not installed'

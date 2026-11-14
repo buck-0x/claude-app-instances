@@ -38,6 +38,27 @@ stub_count() { stub_pids | wc -l | tr -d ' '; }
 # The names on "launching" lines, comma-joined in output order.
 launched() { print -r -- "$1" | sed -n 's/^   • \(.*\): launching$/\1/p' | paste -sd, -; }
 
+# Start a stand-in watchdog for launcher script $1: zsh running a sleeper at that
+# exact path, so ps shows `/bin/zsh <script>`. Sets FAKE_WD to its pid. The real
+# script is moved aside while the sleeper starts, then put back. (The sleep is
+# not the script's last command: zsh would exec that one in place of itself.)
+start_fake_watchdog() {
+  local script="$1" i
+  mv "$script" "$script.real"
+  print -r -- '#!/bin/zsh
+sleep 60
+:' > "$script"
+  chmod +x "$script"
+  "$script" &
+  FAKE_WD=$!
+  # Its sleep child shows the sleeper script has been read; only then restore.
+  for i in {1..50}; do
+    pgrep -P "$FAKE_WD" sleep >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  mv -f "$script.real" "$script"
+}
+
 # Stop all three launchers' watchdogs and every stub, until nothing is left (a
 # launcher opened through `open` may start a little late).
 reset_all() {
@@ -122,10 +143,11 @@ fi
 echo ""
 echo "Test 5: an instance whose watchdog waits for an update install is skipped"
 reset_all
-# A stand-in watchdog: a live process whose command line holds Two's launcher
-# script, named by Two's lock, with an update-wait line last in Two's log.
-zsh -c 'sleep 60; :' "$(launcher_of "Claude LA Two")" &
-FAKE_WD=$!
+# A stand-in watchdog: zsh running Two's launcher path (so ps shows the
+# `/bin/zsh <script>` line a real watchdog has), named by Two's lock, with an
+# update-wait line last in Two's log. The script is swapped for a sleeper only
+# while the stand-in starts, then restored.
+start_fake_watchdog "$(launcher_of "Claude LA Two")"
 ln -sf "$FAKE_WD" "$LOG_DIR/Claude LA Two.lock"
 print -r -- "$(date '+%Y-%m-%d %H:%M:%S') update pending (staged=101 shipit=none) but not installed: Claude quit this instance to install it. ShipIt waits until every instance has quit; still running: claude-la-test-one" > "$LOG_DIR/Claude LA Two.log"
 print -r -- "$(date '+%Y-%m-%d %H:%M:%S') still waiting for update install (30m0s; staged=101 shipit=none). Install is blocked until these quit: claude-la-test-one" >> "$LOG_DIR/Claude LA Two.log"
@@ -144,6 +166,23 @@ fi
 kill "$FAKE_WD" 2>/dev/null
 wait "$FAKE_WD" 2>/dev/null
 rm -f "$LOG_DIR/Claude LA Two.lock"
+
+echo ""
+echo "Test 6: a pager viewing the launcher script is not taken for its watchdog"
+reset_all
+tail -f "$(launcher_of "Claude LA Two")" >/dev/null &
+PAGER_PID=$!
+ln -sf "$PAGER_PID" "$LOG_DIR/Claude LA Two.lock"
+OUT=$("$NEW_CLAUDE" --launch-all --apps "$APPS")
+if print -r -- "$OUT" | grep -qxF "   • Claude LA Two: launching"; then
+  ok "Two is launched, not skipped as waiting for update"
+else
+  bad "Two is launched, not skipped as waiting for update"
+  print -r -- "$OUT" | sed 's/^/      /'
+fi
+kill "$PAGER_PID" 2>/dev/null
+wait "$PAGER_PID" 2>/dev/null
+rm -f "$LOG_DIR/Claude LA Two.lock" "$LOG_DIR/Claude LA Two.log"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

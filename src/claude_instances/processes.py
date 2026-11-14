@@ -151,14 +151,25 @@ def match_instances(
     return by_name, strays
 
 
-def watchdog_pids(lines: list[ProcessLine], script_path: Path) -> list[int]:
-    """Pids whose command line holds the launcher script path as a whole token.
+def is_watchdog_command(command: str, script: str) -> bool:
+    """True when `command` is zsh running the launcher script `script`.
 
-    The path must start the line or follow a space, and end it or precede a space,
-    so `/Applications/X.app/...` never matches `~/Applications/X.app/...`.
+    macOS runs the launcher's `#!/bin/zsh` as `<zsh> <script>`: the first word must be
+    a zsh interpreter (`zsh` or a path ending `/zsh`) and the rest of the line the
+    whole script path, alone or followed by a space. So `less <script>`, `vim -R
+    <script>` or `/bin/zsh <script>.bak` never count, and `/Applications/X.app/...`
+    never matches `~/Applications/X.app/...`. `new-claude.sh` uses the same rule.
     """
+    interpreter, sep, rest = command.partition(" ")
+    if not sep or interpreter.rsplit("/", 1)[-1] != "zsh":
+        return False
+    return rest == script or rest.startswith(script + " ")
+
+
+def watchdog_pids(lines: list[ProcessLine], script_path: Path) -> list[int]:
+    """Pids of zsh processes running the launcher script (see `is_watchdog_command`)."""
     script = str(script_path)
-    return [line.pid for line in lines if _after_binary(line.command, script) is not None]
+    return [line.pid for line in lines if is_watchdog_command(line.command, script)]
 
 
 def log_says_update_wait(log_path: Path) -> bool:

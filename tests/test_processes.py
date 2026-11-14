@@ -81,9 +81,24 @@ def test_watchdog_pids_need_the_whole_script_path():
         ProcessLine(2, f"/bin/zsh /Users/u{script}"),  # the same name in ~/Applications
         ProcessLine(3, f"/bin/zsh {script}.bak"),
         ProcessLine(4, f"/bin/zsh {script} --flag"),
-        ProcessLine(5, f"{script}"),
+        ProcessLine(5, f"zsh {script}"),
+        ProcessLine(6, f"/opt/homebrew/bin/zsh {script}"),
     ]
-    assert watchdog_pids(lines, script) == [1, 4, 5]
+    assert watchdog_pids(lines, script) == [1, 4, 5, 6]
+
+
+def test_watchdog_pids_ignore_pagers_and_editors_viewing_the_script():
+    script = Path("/Applications/Claude W.app/Contents/MacOS/launcher")
+    lines = [
+        ProcessLine(1, f"less {script}"),
+        ProcessLine(2, f"vim -R {script}"),
+        ProcessLine(3, f"tail -f {script}"),
+        ProcessLine(4, f"/bin/zsh -c sleep 60; : {script}"),
+        ProcessLine(5, f"/bin/bash {script}"),
+        ProcessLine(6, f"{script}"),
+        ProcessLine(7, f"/bin/zsh {script}"),
+    ]
+    assert watchdog_pids(lines, script) == [7]
 
 
 def test_watchdog_alive_requires_lock_and_live_cmdline(tmp_path):

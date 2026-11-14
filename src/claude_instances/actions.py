@@ -261,12 +261,13 @@ def stop_watchdogs(
     timeout_s: int = WATCHDOG_STOP_TIMEOUT_S,
     locks: list[Path] | None = None,
 ) -> list[int]:
-    """Stop every process whose command line contains one of `script_paths`.
+    """Stop every zsh process running one of the launcher scripts `script_paths`.
 
     SIGTERM, wait up to `timeout_s`, then SIGKILL survivors and wait 2 s more.
     Returns the pids still alive. After a SIGKILL, each of `locks` that still names
-    a killed pid is removed. Claude itself is never touched, since its command line
-    never contains a launcher script path. Raises if `ps` cannot be read.
+    a killed pid is removed. Claude itself, and a pager or editor viewing a script,
+    are never touched: only `<zsh> <script>` command lines match. Raises if `ps`
+    cannot be read.
 
     zsh runs a TERM trap only once its foreground command ends, and the watchdog
     sleeps up to 20 s after a launch, so the SIGKILL path is reachable in normal use.
