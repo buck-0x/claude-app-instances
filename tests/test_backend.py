@@ -374,6 +374,19 @@ def test_rearm_opens_launcher_of_running_instance(world: World, backend: Backend
     assert "Claude C" in backend.pending_launches
 
 
+def test_rearm_and_launch_remove_a_stale_lock_in_the_backend_log_dir(
+        world: World, backend: Backend) -> None:
+    lock_c = world.log_dir / "Claude C.lock"
+    lock_i = world.log_dir / "Claude I.lock"
+    world.fake.ps.append(ProcessLine(702, "/usr/sbin/unrelated"))
+    world.fake.locks = {lock_c: 702, lock_i: 702}
+    assert backend.rearm("Claude C").ok
+    assert backend.launch("Claude I").ok
+    assert world.fake.locks == {}
+    assert ("remove_lock_if_names", lock_c, 702) in world.fake.calls
+    assert ("remove_lock_if_names", lock_i, 702) in world.fake.calls
+
+
 def test_rearm_refused_on_closed_row(world: World, backend: Backend) -> None:
     assert backend.rearm("Claude I") == ActionResult(False, "not running; press l to launch")
     assert world.fake.launched == []

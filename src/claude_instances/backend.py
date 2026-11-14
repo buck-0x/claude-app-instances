@@ -214,7 +214,7 @@ class Backend:
                     return ActionResult(
                         False, f"launch requested {int(age)}s ago; {LAUNCH_PENDING}")
             result = act.guarded_launch(launcher, self.actions, self.default_data_dir,
-                                        rearm=rearm)
+                                        rearm=rearm, log_dir=self.log_dir)
             if result.ok:
                 self.pending_launches[launcher.name] = self.monotonic()
             return result
@@ -225,7 +225,7 @@ class Backend:
         does not open the launcher again."""
         with self._launch_lock:
             result = act.guarded_launch(launcher, self.actions, self.default_data_dir,
-                                        rearm=rearm)
+                                        rearm=rearm, log_dir=self.log_dir)
             if result.ok:
                 self.pending_launches[launcher.name] = self.monotonic()
             return result

@@ -185,5 +185,34 @@ wait "$PAGER_PID" 2>/dev/null
 rm -f "$LOG_DIR/Claude LA Two.lock" "$LOG_DIR/Claude LA Two.log"
 
 echo ""
+echo "Test 7: a stale lock naming an unrelated live pid is taken over, never signalled"
+reset_all
+# A watchdog killed without its EXIT trap leaves its lock; after a reboot the pid
+# can belong to anything. SIGUSR1 would end this sleep, so its survival shows it
+# was not signalled.
+sleep 120 &
+UNRELATED=$!
+ln -sf "$UNRELATED" "$LOG_DIR/Claude LA One.lock"
+"$(launcher_of "Claude LA One")" &
+STALE_WD=$!
+for i in {1..20}; do stub_running_for "${DATA_DIRS[1]}" && break; sleep 0.5; done
+if kill -0 "$UNRELATED" 2>/dev/null; then ok "the unrelated process was not signalled"; else bad "the unrelated process was not signalled"; fi
+if stub_running_for "${DATA_DIRS[1]}"; then ok "the launcher launched its instance"; else bad "the launcher launched its instance"; fi
+if [ "$(readlink "$LOG_DIR/Claude LA One.lock" 2>/dev/null)" = "$STALE_WD" ]; then
+  ok "the lock now names the new watchdog"
+else
+  bad "the lock now names the new watchdog (lock: $(readlink "$LOG_DIR/Claude LA One.lock" 2>/dev/null))"
+fi
+if grep -qF "stale lock names pid $UNRELATED" "$LOG_DIR/Claude LA One.log" 2>/dev/null; then
+  ok "the takeover is logged"
+else
+  bad "the takeover is logged"
+fi
+reset_all
+kill "$UNRELATED" 2>/dev/null
+wait "$UNRELATED" 2>/dev/null
+rm -f "$LOG_DIR/Claude LA One.lock"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

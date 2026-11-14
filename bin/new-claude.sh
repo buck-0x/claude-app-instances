@@ -383,6 +383,8 @@ STAMP="$LOG_DIR/$INSTANCE_NAME.stamp"   # mtime = when we last launched/adopted
 REOPEN_REQUESTED=0
 inst_pid=""
 started_at=$(date +%s)
+# This script's path as run (in a function, $0 is the function's name).
+SELF="$0"
 
 mkdir -p "$LOG_DIR"
 
@@ -564,9 +566,31 @@ launch_and_verify() {
 }
 
 # ---- one watchdog per instance (atomic symlink lock, stale-safe) --------------
+# True when command line $1 is zsh running launcher script $2: the first word is
+# a zsh interpreter and the rest is the whole script path, alone or followed by a
+# space (same rule as new-claude's is_watchdog_cmd and the instances TUI).
+is_watchdog_cmd() {
+  local cmd="$1" script="$2" interp="" rest=""
+  cmd="${cmd#"${cmd%%[! ]*}"}"
+  case "$cmd" in *" "*) ;; *) return 1 ;; esac
+  interp="${cmd%% *}"; rest="${cmd#* }"
+  [ "${interp:t}" = "zsh" ] || return 1
+  [ "$rest" = "$script" ] || [ "${rest[1,$(( ${#script} + 1 ))]}" = "$script " ]
+}
+
+# True when pid $1 is a live watchdog for THIS launcher (zsh running this script).
+# A lock left by a watchdog killed without its EXIT trap can name a pid that an
+# unrelated process holds now; that process must never be signalled.
+is_our_watchdog() {
+  local pid="$1" cmd=""
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+  is_watchdog_cmd "$cmd" "$SELF" || is_watchdog_cmd "$cmd" "${SELF:A}"
+}
+
 if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   oldpid=$(readlink "$LOCK" 2>/dev/null || true)
-  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
+  if is_our_watchdog "$oldpid"; then
     # A live watchdog already owns this instance. If the instance is down (the
     # owner is in its grace or update wait), ask the owner to reopen it now;
     # the owner does the launch so there is never a second launcher racing it.
@@ -577,6 +601,9 @@ if ! ln -s "$$" "$LOCK" 2>/dev/null; then
       log "launcher opened while instance is down; asked watchdog pid $oldpid to reopen it"
     fi
     exit 0
+  fi
+  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
+    log "stale lock names pid $oldpid, which is not this launcher's watchdog; taking it over"
   fi
   rm -f "$LOCK"
   ln -s "$$" "$LOCK" 2>/dev/null || exit 0

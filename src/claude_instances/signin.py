@@ -228,7 +228,8 @@ class SigninFlow:
         self.restore_one = restore_one if restore_one is not None else self._guarded_launch
 
     def _guarded_launch(self, launcher: Launcher, rearm: bool = False) -> ActionResult:
-        return guarded_launch(launcher, self.actions, self.default_data_dir, rearm=rearm)
+        return guarded_launch(launcher, self.actions, self.default_data_dir, rearm=rearm,
+                              log_dir=self.log_dir)
 
     def run(self, plan: SigninPlan, cancelled: threading.Event) -> SigninResult:
         try:

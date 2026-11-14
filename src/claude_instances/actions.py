@@ -75,7 +75,16 @@ class SystemActions(Protocol):
     def signal_pids(self, pids: list[int], sig: int) -> None: ...
     def is_alive(self, pid: int) -> bool: ...
     def processes(self) -> list[ProcessLine]: ...
+    def read_lock(self, lock: Path) -> int | None: ...
     def remove_lock_if_names(self, lock: Path, pid: int) -> bool: ...
+
+
+def read_lock(lock: Path) -> int | None:
+    """The pid the watchdog lock symlink `lock` names, or None (missing or not a pid)."""
+    try:
+        return int(os.readlink(lock))
+    except (OSError, ValueError):
+        return None
 
 
 def remove_lock_if_names(lock: Path, pid: int) -> bool:
@@ -157,6 +166,9 @@ class MacSystemActions(SystemActions):
     def processes(self) -> list[ProcessLine]:
         return list_processes()
 
+    def read_lock(self, lock: Path) -> int | None:
+        return read_lock(lock)
+
     def remove_lock_if_names(self, lock: Path, pid: int) -> bool:
         return remove_lock_if_names(lock, pid)
 
@@ -184,19 +196,48 @@ def launch_refusal(
     return None
 
 
+def clear_stale_lock(
+    launcher: Launcher, lines: list[ProcessLine], actions: SystemActions, log_dir: Path
+) -> str | None:
+    """Remove `launcher`'s watchdog lock when `lines` show its pid is no watchdog of it.
+
+    A watchdog killed without its EXIT trap (SIGKILL, a crash, a forced logout or
+    reboot) leaves its lock behind, and a reused pid then looks alive. The launcher
+    would take that process for its watchdog, signal it and exit without launching.
+    Returns None when the lock is absent, live or removed; otherwise why not launching.
+    """
+    lock = log_dir / f"{launcher.name}.lock"
+    pid = actions.read_lock(lock)
+    if pid is None or pid in watchdog_pids(lines, launcher.script_path):
+        return None
+    if actions.remove_lock_if_names(lock, pid):
+        return None
+    return f"stale watchdog lock (pid {pid}) could not be removed; not launching"
+
+
 def guarded_launch(
-    launcher: Launcher, actions: SystemActions, default_data_dir: Path, rearm: bool = False
+    launcher: Launcher,
+    actions: SystemActions,
+    default_data_dir: Path,
+    rearm: bool = False,
+    log_dir: Path | None = None,
 ) -> ActionResult:
     """Open `launcher` with `open -n` only if a fresh `ps` read shows it is safe.
 
-    A failed read refuses: it means "cannot verify", never "nothing running".
+    A failed read refuses: it means "cannot verify", never "nothing running". A
+    watchdog lock in `log_dir` (default `paths.log_dir()`) whose pid that read does
+    not show as this launcher's watchdog is removed first (see `clear_stale_lock`).
     """
+    if log_dir is None:
+        log_dir = paths.log_dir()
     try:
         lines = actions.processes()
     except _PS_ERRORS:
         return ActionResult(False, f"{PS_UNREADABLE}; not launching")
     procs = main_processes(lines, claude_binary(launcher.claude_app))
     reason = launch_refusal(launcher, procs, default_data_dir, rearm)
+    if reason is None:
+        reason = clear_stale_lock(launcher, lines, actions, log_dir)
     if reason is not None:
         return ActionResult(False, reason)
     return actions.launch(launcher.app_path)

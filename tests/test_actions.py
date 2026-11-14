@@ -337,6 +337,66 @@ def test_rearm_launches_through_the_launcher_while_running():
     assert fake.launched == [st.launcher.app_path]
 
 
+def test_guarded_launch_removes_stale_lock_naming_a_non_watchdog_pid():
+    # After a reboot the lock can name a pid now held by an unrelated process; the
+    # launcher would take it for its watchdog, signal it and not launch.
+    target = launcher(script=WD)
+    fake = FakeSystemActions(ps=[ProcessLine(700, "/usr/sbin/unrelated --daemon")],
+                             alive={700}, locks={LOCK: 700})
+    assert guarded_launch(target, fake, DEFAULT, log_dir=LOGS).ok
+    assert fake.locks == {}
+    remove = fake.calls.index(("remove_lock_if_names", LOCK, 700))
+    assert remove < fake.calls.index(("launch", target.app_path))
+
+
+def test_guarded_launch_removes_stale_lock_on_rearm_too():
+    target = launcher(script=WD)
+    fake = FakeSystemActions(ps=[main_line(501, target.data_dir), ProcessLine(700, "less x")],
+                             alive={501, 700}, locks={LOCK: 700})
+    assert guarded_launch(target, fake, DEFAULT, rearm=True, log_dir=LOGS).ok
+    assert fake.locks == {} and fake.launched == [target.app_path]
+
+
+def test_guarded_launch_keeps_lock_of_a_live_watchdog():
+    target = launcher(script=WD)
+    fake = FakeSystemActions(ps=[wd_line(508)], alive={508}, locks={LOCK: 508})
+    assert guarded_launch(target, fake, DEFAULT, log_dir=LOGS).ok
+    assert fake.locks == {LOCK: 508}
+    assert calls_named(fake, "remove_lock_if_names") == []
+
+
+def test_guarded_launch_refuses_when_stale_lock_cannot_be_removed():
+    class StuckLock(FakeSystemActions):
+        def remove_lock_if_names(self, lock: Path, pid: int) -> bool:
+            self._record("remove_lock_if_names", lock, pid)
+            return False
+
+    target = launcher(script=WD)
+    fake = StuckLock(ps=[ProcessLine(700, "/usr/sbin/unrelated")], alive={700},
+                     locks={LOCK: 700})
+    r = guarded_launch(target, fake, DEFAULT, log_dir=LOGS)
+    assert not r.ok and "stale watchdog lock" in r.message and "700" in r.message
+    assert fake.launched == []
+
+
+def test_guarded_launch_without_lock_reads_it_and_launches():
+    target = launcher(script=WD)
+    fake = FakeSystemActions()
+    assert guarded_launch(target, fake, DEFAULT, log_dir=LOGS).ok
+    assert ("read_lock", LOCK) in fake.calls
+
+
+def test_mac_read_lock_on_disk(tmp_path):
+    lock = tmp_path / "X.lock"
+    mac = MacSystemActions()
+    assert mac.read_lock(lock) is None  # missing
+    lock.symlink_to("123")
+    assert mac.read_lock(lock) == 123
+    lock.unlink()
+    lock.symlink_to("garbage")
+    assert mac.read_lock(lock) is None
+
+
 # ---- launch all ---------------------------------------------------------------
 
 def test_launch_all_order_skip_and_gap():

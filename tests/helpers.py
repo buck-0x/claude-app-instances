@@ -297,6 +297,10 @@ class FakeSystemActions:
         self._tick()
         return list(self.ps)
 
+    def read_lock(self, lock: Path) -> int | None:
+        self._record("read_lock", lock)
+        return self.locks.get(lock)
+
     def remove_lock_if_names(self, lock: Path, pid: int) -> bool:
         self._record("remove_lock_if_names", lock, pid)
         if self.locks.get(lock) != pid:
