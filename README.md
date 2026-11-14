@@ -266,13 +266,17 @@ Everything lives in `~/.config/claude-instances/`:
 
 ```text
 order.txt                row order, one display name per line
-expected-accounts.json   the account each instance is expected to use
-usage-cache.json         last usage numbers and their times only
-signin-restore.txt       instances to relaunch after a sign-in
+expected-accounts.json   the account UUID each instance is expected to use
+usage-cache.json         last usage numbers and their times, plus a short hash
+                         of the account they were fetched for
+signin-restore.txt       instances to relaunch after a sign-in, and the pid of
+                         the TUI running that sign-in
 ```
 
 Nothing secret is written to disk: the key, decrypted cookies and raw API
-responses stay in memory.
+responses stay in memory. `expected-accounts.json` does hold full account
+UUIDs: not secrets, but personal identifiers, so don't share the file. The
+usage cache keeps only the first 12 hex digits of each account UUID's SHA-256.
 
 ### Bring to front
 
