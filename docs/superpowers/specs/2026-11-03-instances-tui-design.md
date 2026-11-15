@@ -376,12 +376,12 @@ builder rebuilds the user's local copy once.
 
 ```
  Claude instances                         live usage ✓   refreshed 16:42:10
- #  Instance              State     Account        5h          Week
- 1  Claude Personal       ● open    me@…           12%  2h10m  44%  3d
- 2  Claude Side  ● open    side@…           81%  0h40m  52%  5d
- 3  Claude Work            ● open    ⚠ me@… (shared with Personal)
- 4  Claude V10            ○ closed  test@…          30% · 2h old
- 5  Claude Work         ● open    signed out     —           —
+ #  Instance         State     Account        5h          Week
+ 1  Claude Personal  ● open    me@…           12%  2h10m  44%  3d
+ 2  Claude Side      ● open    side@…         81%  0h40m  52%  5d
+ 3  Claude Work      ● open    ⚠ me@… (shared with Personal)
+ 4  Claude Test      ○ closed  test@…         30% · 2h old
+ 5  Claude Client    ● open    signed out     —           —
  f front  l launch  q quit  a launch all  r refresh  s sign in  d details  ↑↓ move
 ```
 
