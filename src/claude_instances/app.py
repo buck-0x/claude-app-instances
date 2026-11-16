@@ -246,14 +246,13 @@ def carry_restore(plan: SigninPlan, pending: list[str]) -> tuple[list[str], list
 
     Returns (carried, dropped): the names added, and the names that cannot be
     relaunched (no launcher, a duplicate or an old one-shot launcher). The target is
-    never added, nor a row the plan leaves waiting for an update (its watchdog
-    reopens it).
+    never added.
     """
     rows = {r.name: r for r in plan.snapshot.rows}
     carried: list[str] = []
     dropped: list[str] = []
     for name in dict.fromkeys(pending):
-        if name == plan.target or name in plan.restore or name in plan.update_waiting:
+        if name == plan.target or name in plan.restore:
             continue
         row = rows.get(name)
         if row is None or row.is_duplicate or not row.launcher.is_watchdog:
@@ -883,9 +882,6 @@ class InstancesApp(App):
             lines.append("Will be quit and not relaunched: " + ", ".join(plan.not_restorable))
         if plan.restore:
             lines.append(f"Relaunched afterwards: {', '.join(plan.restore)}")
-        if plan.update_waiting:
-            lines.append("Left waiting for an update (its watchdog reopens it): "
-                         + ", ".join(plan.update_waiting))
         if carried:
             lines.append("(includes, left by an earlier sign-in: " + ", ".join(carried) + ")")
         if dropped:

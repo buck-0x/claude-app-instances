@@ -75,9 +75,6 @@ class SigninPlan:
     not_restorable: list[str]
     # The snapshot the plan was made from: launchers, positions and pid labels.
     snapshot: Snapshot = field(repr=False, compare=False)
-    # Closed rows whose live watchdog waits for an update to install: left alone
-    # (not stopped, not relaunched), as launch all and the restore offer do.
-    update_waiting: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -132,12 +129,7 @@ def plan_signin(snapshot: Snapshot, target: str) -> SigninPlan:
         raise SigninRefused("old one-shot launcher; rebuild it with new-claude first")
     others = [r for r in snapshot.rows if r.name != target]
     quit_rows = [r for r in others if r.pids]
-    # A watchdog waiting for an update keeps waiting: it reopens its instance once
-    # the update installs. Stopping it and relaunching would reopen the instance on
-    # the old version and keep blocking the install.
-    waiting = [r for r in others if r.update_waiting and not r.pids]
-    waiting_names = {r.name for r in waiting}
-    watchdog_rows = [r for r in others if r.watchdog_alive and r.name not in waiting_names]
+    watchdog_rows = [r for r in others if r.watchdog_alive]
     pids = [pid for r in quit_rows for pid in r.pids]
     pids += [p.pid for p in snapshot.strays if p.pid not in pids and p.pid not in t.pids]
     involved = {r.name for r in quit_rows} | {r.name for r in watchdog_rows}
@@ -158,7 +150,6 @@ def plan_signin(snapshot: Snapshot, target: str) -> SigninPlan:
         restore=restore,
         not_restorable=not_restorable,
         snapshot=snapshot,
-        update_waiting=[r.name for r in waiting],
     )
 
 

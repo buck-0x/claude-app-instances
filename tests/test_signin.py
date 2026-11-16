@@ -177,17 +177,6 @@ def test_plan_quits_everything_but_target():
     assert p.not_restorable == ["D (duplicate; pids 505, 506)", "O (old one-shot launcher)", "Claude-Unknown (pid 502)"]
 
 
-def test_plan_leaves_an_update_waiting_row_to_its_watchdog():
-    # As launch all and the restore offer do: its watchdog reopens it once the
-    # update installs; stopping it and relaunching would reopen it on the old
-    # version and keep blocking the install.
-    snap = initial()
-    snap.rows[4].update_waiting = True
-    p = plan_signin(snap, "T")
-    assert set(p.watchdog_rows) == {"P", "C"} and p.restore == ["P", "C"]
-    assert p.update_waiting == ["W"]
-
-
 def test_plan_target_default_keeps_its_argless_pid():
     assert 504 not in plan_signin(snap0, "P").quit_pids
 

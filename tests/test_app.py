@@ -598,22 +598,6 @@ async def test_signin_confirmation_lists_each_quit_row_once(backend, world):
         await pilot.press("n")
 
 
-async def test_signin_confirmation_names_rows_left_waiting_for_an_update(backend, world, fake):
-    waiting_for_update(world, fake)  # Claude I's watchdog waits for an install
-    async with InstancesApp(backend).run_test() as pilot:
-        # An earlier sign-in's list naming I is not carried in either.
-        write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=99999)
-        select(pilot, "Claude C")
-        await pilot.press("s")
-        await pilot.pause()
-        question = pilot.app.screen.question
-        assert "Left waiting for an update (its watchdog reopens it): Claude I" in question
-        relaunched = [l for l in question.splitlines() if l.startswith("Relaunched afterwards")]
-        assert all("Claude I" not in l for l in relaunched)
-        assert "left by an earlier sign-in" not in question
-        await pilot.press("n")
-
-
 async def test_signin_offers_expected_account(backend, world):
     (world.dirs["Claude I"] / "config.json").write_text(json.dumps({"lastKnownAccountUuid": B}))
     flow = BlockingFlow(SigninResult(True, "signed in", new_account=B))
