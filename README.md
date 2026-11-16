@@ -250,7 +250,8 @@ pip install -e '.[dev]'
 ```
 
 Python 3.11 or newer is required. `--apps DIR` (repeatable) points the TUI at
-launcher folders other than `/Applications` and `~/Applications`.
+launcher folders other than `/Applications` and `~/Applications`; a relative or
+symlinked `DIR` is resolved to its real path first.
 
 ### Live usage
 

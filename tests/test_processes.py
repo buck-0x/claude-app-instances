@@ -87,6 +87,22 @@ def test_watchdog_pids_need_the_whole_script_path():
     assert watchdog_pids(lines, script) == [1, 4, 5, 6]
 
 
+def test_watchdog_pids_match_the_resolved_script_path(tmp_path):
+    # ps shows a watchdog under its real path (/tmp is /private/tmp on macOS); the
+    # scanned path may go through a symlink. Both forms count, as in the launcher.
+    real = tmp_path / "real/Claude W.app/Contents/MacOS"
+    real.mkdir(parents=True)
+    (real / "launcher").write_text("#!/bin/zsh\n")
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    scanned = tmp_path / "link/Claude W.app/Contents/MacOS/launcher"
+    resolved = os.path.realpath(scanned)
+    lines = [ProcessLine(1, f"/bin/zsh {resolved}"), ProcessLine(2, f"/bin/zsh {scanned}"),
+             ProcessLine(3, f"less {resolved}")]
+    assert watchdog_pids(lines, scanned) == [1, 2]
+    os.symlink("1", tmp_path / "W.lock")
+    assert watchdog_alive("W", scanned, lines, tmp_path)
+
+
 def test_watchdog_pids_ignore_pagers_and_editors_viewing_the_script():
     script = Path("/Applications/Claude W.app/Contents/MacOS/launcher")
     lines = [

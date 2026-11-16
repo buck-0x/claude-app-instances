@@ -62,7 +62,10 @@ def build_backend(args: argparse.Namespace) -> "Backend":
             # UsageLookup derives the AES key from the password itself.
             lookup = UsageLookup(UrllibHttpClient(), password)
     return Backend(
-        apps_dirs=args.apps if args.apps else paths.apps_dirs(),
+        # Resolved, so launcher script paths are absolute and symlink-free like the
+        # ones ps shows for running watchdogs.
+        apps_dirs=[Path(p).expanduser().resolve()
+                   for p in (args.apps if args.apps else paths.apps_dirs())],
         config_dir=paths.config_dir(),
         log_dir=paths.log_dir(),
         support_dir=paths.support_dir(),

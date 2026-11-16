@@ -41,6 +41,23 @@ def test_default_apps_dirs(monkeypatch, tmp_path):
     assert build_backend(parse_args([])).apps_dirs == [tmp_path / "A", tmp_path / "B"]
 
 
+def test_relative_apps_dir_is_resolved(tmp_path, monkeypatch):
+    # Watchdogs show in ps under absolute paths; a relative scan dir never matches.
+    (tmp_path / "Apps").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert build_backend(parse_args(["--apps", "Apps"])).apps_dirs == [
+        (tmp_path / "Apps").resolve()]
+
+
+def test_symlinked_apps_dir_is_resolved(tmp_path, monkeypatch):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    assert build_backend(parse_args(["--apps", str(tmp_path / "link")])).apps_dirs == [
+        (tmp_path / "real").resolve()]
+    monkeypatch.setattr(paths, "apps_dirs", lambda: [tmp_path / "link"])
+    assert build_backend(parse_args([])).apps_dirs == [(tmp_path / "real").resolve()]
+
+
 def test_repeated_apps(tmp_path):
     b = build_backend(parse_args(["--apps", str(tmp_path / "A"), "--apps", str(tmp_path / "B")]))
     assert b.apps_dirs == [tmp_path / "A", tmp_path / "B"]

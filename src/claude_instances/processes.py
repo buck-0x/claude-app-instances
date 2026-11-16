@@ -188,9 +188,15 @@ def is_watchdog_command(command: str, script: str) -> bool:
 
 
 def watchdog_pids(lines: list[ProcessLine], script_path: Path) -> list[int]:
-    """Pids of zsh processes running the launcher script (see `is_watchdog_command`)."""
-    script = str(script_path)
-    return [line.pid for line in lines if is_watchdog_command(line.command, script)]
+    """Pids of zsh processes running the launcher script (see `is_watchdog_command`).
+
+    The script counts under the path given and under its resolved form, as the
+    launcher's `is_our_watchdog` checks `$SELF` and `${SELF:A}`: ps shows a watchdog
+    opened through LaunchServices under its real path (`/tmp` is `/private/tmp`).
+    """
+    forms = {str(script_path), os.path.realpath(script_path)}
+    return [line.pid for line in lines
+            if any(is_watchdog_command(line.command, form) for form in forms)]
 
 
 def log_says_update_wait(log_path: Path) -> bool:

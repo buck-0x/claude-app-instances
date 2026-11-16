@@ -1,3 +1,4 @@
+import os
 import signal
 import subprocess
 from datetime import datetime, timezone
@@ -385,6 +386,34 @@ def test_guarded_launch_without_lock_reads_it_and_launches():
     assert guarded_launch(target, fake, DEFAULT, log_dir=LOGS).ok
     assert ("read_lock", LOCK) in fake.calls
     assert calls_named(fake, "remove_lock_if_names") == []
+
+
+def _symlinked_script(tmp_path: Path) -> tuple[str, str]:
+    """(scanned script path through a symlinked apps dir, the path ps shows)."""
+    real = tmp_path / "real/Claude C.app/Contents/MacOS"
+    real.mkdir(parents=True)
+    (real / "launcher").write_text("#!/bin/zsh\n")
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    scanned = str(tmp_path / "link/Claude C.app/Contents/MacOS/launcher")
+    return scanned, os.path.realpath(scanned)
+
+
+def test_guarded_launch_keeps_the_lock_of_a_watchdog_shown_under_its_real_path(tmp_path):
+    scanned, shown = _symlinked_script(tmp_path)
+    fake = FakeSystemActions(ps=[ProcessLine(508, f"/bin/zsh {shown}")], alive={508},
+                             locks={LOCK: 508})
+    assert guarded_launch(launcher(script=scanned), fake, DEFAULT, log_dir=LOGS).ok
+    assert fake.locks == {LOCK: 508}
+    assert calls_named(fake, "remove_lock_if_names") == []
+
+
+def test_quit_stops_a_watchdog_shown_under_its_real_path(tmp_path):
+    scanned, shown = _symlinked_script(tmp_path)
+    fake = FakeSystemActions(alive={501, 508},
+                             ps=[ProcessLine(508, f"/bin/zsh {shown}"), main_line(501)])
+    outcome, _ = quit_c(fake, [501], script=scanned)
+    assert outcome is QuitOutcome.QUIT
+    assert ("signal_pids", [508], signal.SIGTERM) in fake.calls
 
 
 def test_guarded_launch_reads_the_lock_before_ps():
