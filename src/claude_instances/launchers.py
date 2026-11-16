@@ -28,7 +28,7 @@ _BODY_LINE = re.compile(r"^LAUNCHER_BODY=(\d+)$", re.MULTILINE)
 # (keep it equal to LAUNCHER_BODY in bin/new-claude.sh). Launchers without the line,
 # or with a lower number, lack the stale-lock check and the plain-Claude adoption
 # and want a rebuild.
-CURRENT_LAUNCHER_BODY = 3
+CURRENT_LAUNCHER_BODY = 4
 
 
 @dataclass(frozen=True)

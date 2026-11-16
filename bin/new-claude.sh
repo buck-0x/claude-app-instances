@@ -34,7 +34,7 @@ DEFAULT_DATA_DIR="${CLAUDE_LAUNCHER_DEFAULT_DATA_DIR:-$SUPPORT_DIR/Claude}"
 # LAUNCHER_BODY=<n>. Bump it when the body changes in a way that needs a rebuild,
 # together with CURRENT_LAUNCHER_BODY in src/claude_instances/launchers.py; the
 # instances TUI flags launchers with an older body.
-LAUNCHER_BODY=3
+LAUNCHER_BODY=4
 
 # ---- parse arguments ---------------------------------------------------------
 DISPLAY_NAME=""
