@@ -40,6 +40,8 @@ from claude_instances.usage import Lookup, LookupResult, UsageCache
 PENDING_LAUNCH_S = 30
 
 DECRYPT_ERROR = "cannot decrypt cookies (wrong key?)"
+# `restore`'s message for a running row whose watchdog it re-armed.
+REARMED = "watchdog re-armed"
 
 # What a claude-instances TUI's command line contains (the entry point or the package).
 _TUI_MARKERS = ("claude-instances", "claude_instances")
@@ -249,6 +251,29 @@ class Backend:
             snapshot = replace(snapshot, rows=[r for r in snapshot.rows if r.name in wanted])
         return act.launch_all(snapshot, self.actions, self.default_data_dir,
                               sleep=self.sleep, launch_one=self._launch_launcher)
+
+    def restore(self, names: list[str]) -> list[tuple[str, ActionResult]]:
+        """Relaunch what an interrupted sign-in left in its restore list.
+
+        A row still running without a watchdog (the sign-in stopped the watchdog but
+        never quit the instance) is re-armed: its launcher is opened so a fresh
+        watchdog adopts it, as the sign-in's own restore does. Its result is ok with
+        the message `REARMED`. The other rows go through `launch_all`, which skips
+        running, duplicated and update-waiting rows. Names with no launcher are left
+        out.
+        """
+        snapshot = self.snapshot()
+        wanted = set(names)
+        rows = [r for r in snapshot.rows if r.name in wanted]
+        bare = [r for r in rows if r.pids and not r.is_duplicate and not r.watchdog_alive]
+        results: list[tuple[str, ActionResult]] = []
+        for row in bare:
+            result = self._launch_launcher(row.launcher, rearm=True)
+            results.append((row.name, ActionResult(True, REARMED) if result.ok else result))
+        rest = replace(snapshot, rows=[r for r in rows if r not in bare])
+        results += act.launch_all(rest, self.actions, self.default_data_dir,
+                                  sleep=self.sleep, launch_one=self._launch_launcher)
+        return results
 
     # ---- other actions ------------------------------------------------------------
 

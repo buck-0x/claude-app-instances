@@ -34,7 +34,7 @@ from textual.widgets import DataTable, Footer, Static
 
 from claude_instances.accounts import short_id
 from claude_instances.actions import AUTOMATION_HELP, UPDATE_WAIT_SKIP, QuitOutcome
-from claude_instances.backend import Backend
+from claude_instances.backend import REARMED, Backend
 from claude_instances.cookies import SessionState
 from claude_instances.paths import RESTORE_FILE
 from claude_instances.processes import MainProcess
@@ -793,9 +793,11 @@ class InstancesApp(App):
 
         def body() -> str:
             # Running rows come back as skips: nothing is left to relaunch for them.
-            results = backend.launch_all(names)
+            # Running rows that lost their watchdog are re-armed; the rest relaunch.
+            results = backend.restore(names)
             seen = {name for name, _ in results}
-            launched = [name for name, r in results if r.ok]
+            rearmed = [name for name, r in results if r.ok and r.message == REARMED]
+            launched = [name for name, r in results if r.ok and r.message != REARMED]
             running = [name for name, r in results if not r.ok and r.message in _RUNNING_SKIPS]
             waiting = [name for name, r in results
                        if not r.ok and r.message == UPDATE_WAIT_SKIP]
@@ -803,6 +805,8 @@ class InstancesApp(App):
                       if not r.ok and r.message not in _LAUNCH_ALL_SKIPS]
             gone = [name for name in names if name not in seen]
             parts = []
+            if rearmed:
+                parts.append(f"re-armed {', '.join(rearmed)}")
             if launched:
                 parts.append(f"relaunched {', '.join(launched)}")
             if running:

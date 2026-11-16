@@ -702,7 +702,14 @@ async def test_reused_owner_pid_neither_blocks_signin_nor_hides_the_offer(backen
         assert "another sign-in" not in pilot.app.status_text
 
 
+def arm_watchdog(world, fake, name: str, pid: int) -> None:
+    """A live watchdog for `name`: its lock names `pid` and ps shows the script."""
+    (world.log_dir / f"{name}.lock").symlink_to(str(pid))
+    fake.ps.append(ProcessLine(pid, f"/bin/zsh {world.app_path(name)}/Contents/MacOS/launcher"))
+
+
 async def test_restore_counts_running_instances_as_restored(backend, world, fake):
+    arm_watchdog(world, fake, "Claude C", 710)
     write_restore(world.cfg / RESTORE_FILE, ["Claude C", "Claude I"], owner_pid=99999)
     async with InstancesApp(backend).run_test() as pilot:
         await pilot.pause()
@@ -711,6 +718,32 @@ async def test_restore_counts_running_instances_as_restored(backend, world, fake
         assert fake.launched == [world.app_path("Claude I")]
         assert not (world.cfg / RESTORE_FILE).exists()
         assert "already running: Claude C" in pilot.app.status_text
+
+
+async def test_restore_rearms_an_instance_left_running_without_a_watchdog(
+        backend, world, fake):
+    # The interrupted sign-in stopped C's watchdog but died before quitting C.
+    write_restore(world.cfg / RESTORE_FILE, ["Claude C", "Claude I"], owner_pid=99999)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("y")
+        await finish_workers(pilot)
+        assert fake.launched == [world.app_path("Claude C"), world.app_path("Claude I")]
+        assert not (world.cfg / RESTORE_FILE).exists()
+        status = pilot.app.status_text
+        assert "re-armed Claude C" in status and "relaunched Claude I" in status
+
+
+async def test_restore_keeps_a_failed_rearm_for_next_start(backend, world, fake):
+    write_restore(world.cfg / RESTORE_FILE, ["Claude C"], owner_pid=99999)
+    async with InstancesApp(backend).run_test() as pilot:
+        await pilot.pause()
+        backend.pending_launches["Claude C"] = backend.monotonic()
+        await pilot.press("y")
+        await finish_workers(pilot)
+        assert fake.launched == []
+        assert read_restore(world.cfg / RESTORE_FILE)[1] == ["Claude C"]
+        assert "kept for next start" in pilot.app.status_text
 
 
 async def test_restore_keeps_only_refused_names(backend, world, fake):
