@@ -284,5 +284,60 @@ reset_all
 rm -f "$LOG_DIR/Claude LA Three.lock"
 
 echo ""
+echo "Test 11: a launcher opened during a stale-lock takeover does not kill the new watchdog"
+reset_all
+rm -f "$LOG_DIR/Claude LA Three.log"
+sleep 0 &
+DEAD=$!
+wait "$DEAD" 2>/dev/null
+ln -sf "$DEAD" "$LOG_DIR/Claude LA Three.lock"
+"$(launcher_of "Claude LA Three")" &
+TAKER=$!
+# Inside the takeover's 1 s settle, a second open finds the lock naming TAKER
+# (zsh running the script, so its owner), sees no instance and sends it USR1.
+sleep 0.4
+"$(launcher_of "Claude LA Three")" &
+sleep 6
+if kill -0 "$TAKER" 2>/dev/null; then ok "the taking-over watchdog survives the USR1"; else bad "the taking-over watchdog survives the USR1"; fi
+if stub_running_for "${DATA_DIRS[3]}"; then ok "the instance launched"; else bad "the instance launched"; fi
+if [ "$(readlink "$LOG_DIR/Claude LA Three.lock" 2>/dev/null)" = "$TAKER" ]; then
+  ok "the lock names it"
+else
+  bad "the lock names it (lock: $(readlink "$LOG_DIR/Claude LA Three.lock" 2>/dev/null))"
+fi
+reset_all
+rm -f "$LOG_DIR/Claude LA Three.lock"
+
+echo ""
+echo "Test 12: a watchdog whose lock now names another watchdog exits and leaves the instance"
+reset_all
+rm -f "$LOG_DIR/Claude LA One.log"
+"$(launcher_of "Claude LA One")" &
+LOSER=$!
+for i in {1..20}; do stub_running_for "${DATA_DIRS[1]}" && break; sleep 0.5; done
+stub_running_for "${DATA_DIRS[1]}" || bad "precondition: One's instance is running"
+# Another watchdog took the lock over (a lost race); a sleep stands in for it.
+sleep 60 &
+OTHER=$!
+ln -sf "$OTHER" "$LOG_DIR/Claude LA One.lock"
+sleep 4
+if ! kill -0 "$LOSER" 2>/dev/null; then ok "the watchdog that lost its lock exits"; else bad "the watchdog that lost its lock exits"; fi
+if grep -qF "lock no longer names this watchdog (pid $LOSER)" "$LOG_DIR/Claude LA One.log" 2>/dev/null; then
+  ok "it logs why"
+else
+  bad "it logs why"
+fi
+if stub_running_for "${DATA_DIRS[1]}"; then ok "the instance is left running"; else bad "the instance is left running"; fi
+if [ "$(readlink "$LOG_DIR/Claude LA One.lock" 2>/dev/null)" = "$OTHER" ]; then
+  ok "the other watchdog's lock is left alone"
+else
+  bad "the other watchdog's lock is left alone"
+fi
+kill "$OTHER" 2>/dev/null
+wait "$OTHER" 2>/dev/null
+reset_all
+rm -f "$LOG_DIR/Claude LA One.lock"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

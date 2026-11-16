@@ -42,6 +42,22 @@ def test_main_processes_excludes_type_helpers_grep_and_non_flag_args():
     assert MainProcess(504, None) in procs and MainProcess(511, None) in procs
 
 
+def test_argless_main_must_run_the_binary_itself():
+    # A tool given the binary as an argument (a debugger, codesign, an editor) is no
+    # Claude main; only a line that starts with the binary can be argless.
+    lines = [
+        ProcessLine(1, f"lldb {BIN}"),
+        ProcessLine(2, f"codesign -dv {BIN}"),
+        ProcessLine(3, f"vim {BIN}"),
+        ProcessLine(4, f"/usr/bin/sample {BIN} -file /tmp/x"),
+        ProcessLine(5, f"{BIN}"),
+        ProcessLine(6, f"{BIN} -psn_0_1"),
+        ProcessLine(7, f"/bin/zsh {BIN}"),  # a script binary under its shell (test stubs)
+        ProcessLine(8, f"/usr/bin/env zsh {BIN}"),
+    ]
+    assert [p.pid for p in main_processes(lines, BIN)] == [5, 6, 7]
+
+
 def test_v1_does_not_match_v10():
     procs = main_processes(parse_ps(FIXTURE), BIN)
     assert next(p for p in procs if p.pid == 501).data_dir == AS / "Claude-V1"

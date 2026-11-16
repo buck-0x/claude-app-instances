@@ -115,11 +115,27 @@ def _data_dir_value(command: str) -> str | None:
     return value if stop == -1 else value[:stop]
 
 
+_SCRIPT_SHELLS = ("zsh", "sh", "bash")
+
+
+def _runs_binary(command: str, binary: str) -> bool:
+    """True when `binary` is the program `command` runs: it starts the line, or
+    follows a lone shell word (`zsh`, `sh`, `bash`, any path), as a script binary
+    does. A tool given the binary as an argument (lldb, codesign, an editor) is not.
+    """
+    if command.startswith(binary):
+        return True
+    first, sep, rest = command.partition(" ")
+    return bool(sep) and first.rsplit("/", 1)[-1] in _SCRIPT_SHELLS and rest.startswith(binary)
+
+
 def main_processes(lines: list[ProcessLine], binary: str) -> list[MainProcess]:
     """Claude main processes for `binary`, each with its data dir or None if argless.
 
     Lines with `--type=` are helpers and never count. A line with the binary but no
-    `--user-data-dir=` counts only when the binary has no arguments or flags only.
+    `--user-data-dir=` counts only when the binary is the program being run (see
+    `_runs_binary`; never an argument to a debugger, `codesign` or an editor) and
+    has no arguments or flags only. bin/new-claude.sh applies the same rule.
     """
     procs = []
     for line in lines:
@@ -131,7 +147,7 @@ def main_processes(lines: list[ProcessLine], binary: str) -> list[MainProcess]:
         data_dir = _data_dir_value(line.command)
         if data_dir is not None:
             procs.append(MainProcess(line.pid, Path(data_dir)))
-        elif rest == "" or rest.startswith(" -"):
+        elif _runs_binary(line.command, binary) and (rest == "" or rest.startswith(" -")):
             procs.append(MainProcess(line.pid, None))
     return procs
 

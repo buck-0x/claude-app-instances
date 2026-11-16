@@ -252,6 +252,26 @@ else
   bad "exactly one stub process (count=$(stub_count), argless=$(argless_stub_count))"
 fi
 if ! log_has "launching ("; then ok "nothing launched on the default profile"; else bad "nothing launched on the default profile"; fi
+reset_all
+
+echo ""
+echo "Test 9: a tool given the binary as an argument is not a plain Claude"
+# tail stands in for lldb, codesign or an editor: its command line is
+# `tail -f <binary>`, the binary with nothing after it.
+tail -f "$STUB_BIN" >/dev/null &
+VIEWER=$!
+sleep 1
+OUT=$("$NEW_CLAUDE" --reopen-all --apps "$APPS")
+if print -r -- "$OUT" | grep -qF "$DEFAULT_NAME: reopening"; then
+  ok "default launcher reopened (the viewer is not its instance)"
+else
+  bad "default launcher reopened (the viewer is not its instance)"
+  print -r -- "$OUT" | sed 's/^/      /'
+fi
+kill "$VIEWER" 2>/dev/null
+wait "$VIEWER" 2>/dev/null
+sleep 3
+reset_all
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

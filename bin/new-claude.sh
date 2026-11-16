@@ -86,7 +86,9 @@ launcher_claude_app() {
 # Is an instance of $1 (app bundle) running with --user-data-dir=$2 exactly?
 # When $2 is (or resolves to) the default data folder, an argless main process (the binary alone
 # or followed by flags only, no --user-data-dir= and no --type=) counts too.
-# Only the argless branch needs the binary at a word start; the
+# Only the argless branch needs the binary to be the program being run: it starts
+# the command line, or follows a lone shell word (zsh, sh, bash) as a script does;
+# never an argument to lldb, codesign or an editor. The
 # --user-data-dir branch keeps its substring match (a bundle under a symlinked
 # path, such as /tmp, shows in ps under its real /private/tmp path).
 # Search strings go through the environment, NOT awk -v: values on awk's own
@@ -103,10 +105,14 @@ instance_running_for() {
       if (i = index($0, d)) {
         r = substr($0, i + length(d), 1)
         if (r == "" || r == " ") { f = 1; exit }
-      } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
-                 !index($0, "--user-data-dir=") && !index($0, "--type=")) {
-        a = substr($0, j + length(b), 2)
-        if (a == "" || a == " -") { f = 1; exit }
+      } else if (isdef == "1" && !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        c = $0; sub(/^ +/, "", c)
+        if (index(c, b) != 1) {
+          sp = index(c, " "); w = substr(c, 1, sp - 1); sub(/.*\//, "", w)
+          if (sp && (w == "zsh" || w == "sh" || w == "bash")) c = substr(c, sp + 1)
+        }
+        a = substr(c, length(b) + 1, 2)
+        if (index(c, b) == 1 && (a == "" || a == " -")) { f = 1; exit }
       }
     }
     END { exit f ? 0 : 1 }'
@@ -441,7 +447,8 @@ claude_binary() {
 # so ".../Claude-V1" never matches ".../Claude-V10"). When DATA_DIR is the
 # default data folder, a plain main process (the binary alone or followed by
 # flags only, no --user-data-dir= and no --type=) is this instance too
-# (word-start check on that branch only, as in instance_running_for).
+# (on that branch only, the binary must be the program being run, as in
+# instance_running_for and the instances TUI's main_processes).
 # Prints "<pid> dir" or "<pid> plain".
 # Search strings go through the environment, NOT awk -v: values on awk's own
 # command line can match awk's own ps entry (racy self-match).
@@ -452,10 +459,14 @@ instance_pid() {
       if (i = index($0, d)) {
         r = substr($0, i + length(d), 1)
         if (r == "" || r == " ") { print $1 " dir"; f = 1; exit }
-      } else if (isdef == "1" && (j == 1 || substr($0, j - 1, 1) == " ") &&
-                 !index($0, "--user-data-dir=") && !index($0, "--type=")) {
-        a = substr($0, j + length(b), 2)
-        if (a == "" || a == " -") { print $1 " plain"; f = 1; exit }
+      } else if (isdef == "1" && !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        c = $0; sub(/^ *[0-9]+ +/, "", c)
+        if (index(c, b) != 1) {
+          sp = index(c, " "); w = substr(c, 1, sp - 1); sub(/.*\//, "", w)
+          if (sp && (w == "zsh" || w == "sh" || w == "bash")) c = substr(c, sp + 1)
+        }
+        a = substr(c, length(b) + 1, 2)
+        if (index(c, b) == 1 && (a == "" || a == " -")) { print $1 " plain"; f = 1; exit }
       }
     }
     END { exit f ? 0 : 1 }'
@@ -648,6 +659,16 @@ launch_and_verify() {
   instance_running
 }
 
+# Exit when the lock no longer names this watchdog: another watchdog took it over
+# (two launchers racing a stale lock), so that one owns the instance. The
+# instance itself is left alone.
+exit_unless_lock_is_ours() {
+  [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && return 0
+  log "lock no longer names this watchdog (pid $$); leaving the instance to its owner and exiting"
+  WATCHING=0
+  exit 0
+}
+
 # ---- one watchdog per instance (atomic symlink lock, stale-safe) --------------
 # True when command line $1 is zsh running launcher script $2: the first word is
 # a zsh interpreter and the rest is the whole script path, alone or followed by a
@@ -670,6 +691,14 @@ is_our_watchdog() {
   cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
   is_watchdog_cmd "$cmd" "$SELF" || is_watchdog_cmd "$cmd" "${SELF:A}"
 }
+
+# Traps go in before the lock is taken: a launcher opened during the stale-lock
+# takeover's settle sends this process USR1 (it already looks like the owner),
+# and zsh's default action for USR1 would kill it. Only a process that became
+# the watchdog logs its exit; the lock is removed on exit only while it names us.
+trap 'if [ "$WATCHING" -eq 1 ]; then log "watchdog (pid $$) exiting"; fi; [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
+trap 'if [ "$WATCHING" -eq 1 ]; then log "watchdog stopped by signal"; fi; exit 0' INT TERM
+trap 'if [ "$SHIPIT_GRACE" -eq 1 ]; then log "launcher opened while waiting for the ShipIt relaunch; ignored"; else REOPEN_REQUESTED=1; log "reopen requested by launcher"; fi' USR1
 
 if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   oldpid=$(readlink "$LOCK" 2>/dev/null || true)
@@ -700,10 +729,6 @@ if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   sleep 1
   [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] || exit 0
 fi
-# Remove the lock on exit only while it is still ours.
-trap 'log "watchdog (pid $$) exiting"; [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
-trap 'log "watchdog stopped by signal"; exit 0' INT TERM
-trap 'if [ "$SHIPIT_GRACE" -eq 1 ]; then log "launcher opened while waiting for the ShipIt relaunch; ignored"; else REOPEN_REQUESTED=1; log "reopen requested by launcher"; fi' USR1
 WATCHING=1
 
 log "watchdog started (pid $$; poll=${POLL}s grace=${GRACE}s; shipit=$SHIPIT_DIR)"
@@ -729,6 +754,7 @@ wait_for_update_install() {
   local waited=0 since_beat=0 cur="" upd=""
   while :; do
     nap "$POLL"
+    exit_unless_lock_is_ours
     waited=$((waited + POLL)); since_beat=$((since_beat + POLL))
     if instance_running; then
       last_ver=$(bundle_version)
@@ -779,6 +805,7 @@ relaunched_for=""
 staged_seen=""
 while :; do
   nap "$POLL"
+  exit_unless_lock_is_ours
   if instance_running; then
     staged=$(staged_update_version) || staged=""
     if [ -n "$staged" ] && [ "$staged" != "$staged_seen" ]; then
