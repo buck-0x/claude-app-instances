@@ -310,7 +310,10 @@ quits every other Claude (and stops their watchdogs) so the `claude://` login
 link can only land in the right instance. When you finish or cancel, it
 relaunches everything it quit. The list of instances to relaunch is written to
 `signin-restore.txt` before anything is quit, so it survives a crash and the
-TUI offers to relaunch them on its next start.
+TUI offers to relaunch them on its next start. That offer re-arms an instance
+the interrupted sign-in left running without its watchdog. An instance whose
+watchdog waits for a Claude update to install is left to that watchdog by both
+the sign-in and the offer, as `a` does: it reopens once the update lands.
 
 ### Rebuild your launchers
 
