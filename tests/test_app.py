@@ -251,17 +251,35 @@ async def test_launch_all_skips_an_instance_waiting_for_update(backend, world, f
         assert "skipped Claude I (waiting for update)" in pilot.app.status_text
 
 
-async def test_restore_leaves_an_instance_waiting_for_update_to_its_watchdog(
+async def test_restore_relaunches_an_update_waiting_instance_as_the_signin_does(
         backend, world, fake):
+    # The sign-in's own restore relaunches a row whose watchdog was in update wait
+    # (spec step 3 stops that watchdog); the offer after an interrupted sign-in
+    # does the same, rather than skipping it as launch all does.
     waiting_for_update(world, fake)
     write_restore(world.cfg / RESTORE_FILE, ["Claude I"], owner_pid=99999)
     async with InstancesApp(backend).run_test() as pilot:
         await pilot.pause()
         await pilot.press("y")
         await finish_workers(pilot)
-        assert fake.launched == []
+        assert fake.launched == [world.app_path("Claude I")]
         assert not (world.cfg / RESTORE_FILE).exists()
-        assert "waiting for update (its watchdog reopens it): Claude I" in pilot.app.status_text
+        assert "relaunched Claude I" in pilot.app.status_text
+
+
+async def test_signin_confirmation_says_update_waiting_rows_relaunch_now(
+        backend, world, fake):
+    waiting_for_update(world, fake)
+    async with InstancesApp(backend).run_test() as pilot:
+        select(pilot, "Claude C")
+        await pilot.press("s")
+        await pilot.pause()
+        question = pilot.app.screen.question
+        assert "Watchdogs stopped: Claude I" in question
+        assert "Relaunched afterwards: Claude I" in question
+        assert ("(Claude I was waiting for an update to install; it is relaunched on the"
+                " version installed by then)") in question
+        await pilot.press("n")
 
 
 async def test_header_reflects_bad_key(backend_with_decrypt_errors):

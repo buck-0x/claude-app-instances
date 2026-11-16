@@ -882,6 +882,16 @@ class InstancesApp(App):
             lines.append("Will be quit and not relaunched: " + ", ".join(plan.not_restorable))
         if plan.restore:
             lines.append(f"Relaunched afterwards: {', '.join(plan.restore)}")
+            # Their watchdogs are stopped too (none may reopen mid-login), so the
+            # relaunch does not wait for the pending update.
+            waiting = [r.name for r in plan.snapshot.rows
+                       if r.update_waiting and r.name in plan.restore]
+            if len(waiting) == 1:
+                lines.append(f"({waiting[0]} was waiting for an update to install; it is"
+                             " relaunched on the version installed by then)")
+            elif waiting:
+                lines.append(f"({', '.join(waiting)} were waiting for an update to install;"
+                             " they are relaunched on the version installed by then)")
         if carried:
             lines.append("(includes, left by an earlier sign-in: " + ", ".join(carried) + ")")
         if dropped:

@@ -259,8 +259,10 @@ class Backend:
         never quit the instance) is re-armed: its launcher is opened so a fresh
         watchdog adopts it, as the sign-in's own restore does. Its result is ok with
         the message `REARMED`. The other rows go through `launch_all`, which skips
-        running, duplicated and update-waiting rows. Names with no launcher are left
-        out.
+        running and duplicated rows. Unlike a plain launch all, a row whose watchdog
+        waits for an update is relaunched, exactly as the sign-in's own restore does
+        (the sign-in stops that watchdog so it cannot reopen mid-login). Names with
+        no launcher are left out.
         """
         snapshot = self.snapshot()
         wanted = set(names)
@@ -270,7 +272,8 @@ class Backend:
         for row in bare:
             result = self._launch_launcher(row.launcher, rearm=True)
             results.append((row.name, ActionResult(True, REARMED) if result.ok else result))
-        rest = replace(snapshot, rows=[r for r in rows if r not in bare])
+        rest = replace(snapshot, rows=[replace(r, update_waiting=False)
+                                       for r in rows if r not in bare])
         results += act.launch_all(rest, self.actions, self.default_data_dir,
                                   sleep=self.sleep, launch_one=self._launch_launcher)
         return results
