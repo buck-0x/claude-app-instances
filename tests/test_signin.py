@@ -244,6 +244,22 @@ def test_success_restores_in_order_and_clears(tmp_path, fake, flow):
     assert fake.launched == [APP["T"], APP["P"], APP["C"], APP["W"]] and not (tmp_path / RESTORE).exists()
 
 
+def test_update_waiting_watchdog_is_stopped_for_the_login_and_restored(tmp_path, fake, flow):
+    # Spec step 3 (review N1): the sign-in quits every Claude, which can let a
+    # pending update install; a watchdog left waiting would then reopen its
+    # instance during the login wait. So it is stopped before the login and its
+    # row relaunched afterwards, like any other watchdog-only row.
+    snap = initial()
+    snap.rows[4].update_waiting = True  # W: closed, its watchdog waits on an update
+    plan = plan_signin(snap, "T")
+    assert "W" in plan.watchdog_rows and "W" in plan.restore
+    r = flow.run(plan, threading.Event())
+    assert r.ok and "W" in r.restored and fake.launched[-1] == APP["W"]
+    stops = [c for c in fake.calls if c[0] == "signal_pids"]
+    assert stops and 513 in stops[0][1]  # W's watchdog is in the first stop
+    assert fake.calls.index(stops[0]) < fake.calls.index(("launch", APP["T"]))
+
+
 def test_quit_stops_watchdogs_and_clears_sigkilled_locks_first(tmp_path):
     fake = make_fake()
     fake.sigterm_ignored = {514}
