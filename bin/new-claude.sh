@@ -18,6 +18,7 @@
 #   new-claude "Claude Work" --apps ~/Applications     # custom install dir
 #   new-claude --list                                    # list launchers created
 #   new-claude --reopen-all                              # reopen instances that aren't running
+#   new-claude --launch-all                              # launch all instances in order.txt order
 #
 # Re-running with the same name safely rebuilds that launcher.
 
@@ -26,6 +27,14 @@ set -e
 # ---- config ------------------------------------------------------------------
 CLAUDE_APP="/Applications/Claude.app"
 SUPPORT_DIR="$HOME/Library/Application Support"
+# Claude's default data folder (used by a Claude started with no
+# --user-data-dir). CLAUDE_LAUNCHER_DEFAULT_DATA_DIR is a test hook.
+DEFAULT_DATA_DIR="${CLAUDE_LAUNCHER_DEFAULT_DATA_DIR:-$SUPPORT_DIR/Claude}"
+# Version of the generated launcher body, baked into each header as
+# LAUNCHER_BODY=<n>. Bump it when the body changes in a way that needs a rebuild,
+# together with CURRENT_LAUNCHER_BODY in src/claude_instances/launchers.py; the
+# instances TUI flags launchers with an older body.
+LAUNCHER_BODY=4
 
 # ---- parse arguments ---------------------------------------------------------
 DISPLAY_NAME=""
@@ -33,16 +42,19 @@ DATA_DIR_NAME=""
 APPS_DIR="/Applications"
 DO_LIST=0
 DO_REOPEN=0
+DO_LAUNCH_ALL=0
+APPS_GIVEN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --list)       DO_LIST=1; shift ;;
     --reopen-all) DO_REOPEN=1; shift ;;
+    --launch-all) DO_LAUNCH_ALL=1; shift ;;
     --dir)        DATA_DIR_NAME="$2"; shift 2 ;;
-    --apps)       APPS_DIR="${2/#\~/$HOME}"; shift 2 ;;
+    --apps)       APPS_DIR="${2/#\~/$HOME}"; APPS_GIVEN=1; shift 2 ;;
     --claude-app) CLAUDE_APP="${2/#\~/$HOME}"; shift 2 ;;  # test hook
     -h|--help)
-      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*)     echo "Unknown option: $1" >&2; exit 1 ;;
     *)      if [ -z "$DISPLAY_NAME" ]; then DISPLAY_NAME="$1"; fi; shift ;;
@@ -72,25 +84,67 @@ launcher_claude_app() {
 }
 
 # Is an instance of $1 (app bundle) running with --user-data-dir=$2 exactly?
+# When $2 is (or resolves to) the default data folder, an argless main process (the binary alone
+# or followed by flags only, no --user-data-dir= and no --type=) counts too.
+# Only the argless branch needs the binary to be the program being run: it starts
+# the command line, or follows a lone shell word (zsh, sh, bash) as a script does;
+# never an argument to lldb, codesign or an editor. The
+# --user-data-dir branch keeps its substring match (a bundle under a symlinked
+# path, such as /tmp, shows in ps under its real /private/tmp path).
 # Search strings go through the environment, NOT awk -v: values on awk's own
 # command line can match awk's own ps entry (racy self-match).
 instance_running_for() {
-  local capp="$1" datadir="$2" exe=""
+  local capp="$1" datadir="$2" exe="" isdef=0
   exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$capp/Contents/Info.plist" 2>/dev/null) || exe=""
-  ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" awk '
-    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"] }
-    index($0, b) && (i = index($0, d)) {
-      r = substr($0, i + length(d), 1)
-      if (r == "" || r == " ") { f = 1; exit }
+  if [ "$datadir" = "$DEFAULT_DATA_DIR" ] || [ "${datadir:A}" = "${DEFAULT_DATA_DIR:A}" ]; then
+    isdef=1
+  fi
+  ps -axo command= | MB="$capp/Contents/MacOS/${exe:-Claude}" MD="--user-data-dir=$datadir" MDEF="$isdef" awk '
+    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
+    (j = index($0, b)) {
+      if (i = index($0, d)) {
+        r = substr($0, i + length(d), 1)
+        if (r == "" || r == " ") { f = 1; exit }
+      } else if (isdef == "1" && !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        c = $0; sub(/^ +/, "", c)
+        if (index(c, b) != 1) {
+          sp = index(c, " "); w = substr(c, 1, sp - 1); sub(/.*\//, "", w)
+          if (sp && (w == "zsh" || w == "sh" || w == "bash")) c = substr(c, sp + 1)
+        }
+        a = substr(c, length(b) + 1, 2)
+        if (index(c, b) == 1 && (a == "" || a == " -")) { f = 1; exit }
+      }
     }
     END { exit f ? 0 : 1 }'
 }
 
+# True when command line $1 is zsh running launcher script $2: the first word is
+# a zsh interpreter (zsh or a path ending /zsh) and the rest is the whole script
+# path, alone or followed by a space. A pager or editor viewing the script never
+# counts. Same rule as the instances TUI (processes.is_watchdog_command).
+is_watchdog_cmd() {
+  local cmd="$1" script="$2" interp="" rest=""
+  cmd="${cmd#"${cmd%%[! ]*}"}"
+  case "$cmd" in *" "*) ;; *) return 1 ;; esac
+  interp="${cmd%% *}"; rest="${cmd#* }"
+  [ "${interp:t}" = "zsh" ] || return 1
+  [ "$rest" = "$script" ] || [ "${rest[1,$(( ${#script} + 1 ))]}" = "$script " ]
+}
+
+# Pids of zsh processes running launcher script $1 (see is_watchdog_cmd).
+watchdog_pids_of() {
+  local pid="" cmd=""
+  ps -axo pid=,command= | while read -r pid cmd; do
+    if is_watchdog_cmd "$cmd" "$1"; then print -r -- "$pid"; fi
+  done
+  return 0
+}
+
 # Kill any resident watchdog process for a launcher app path (never the
-# Claude instance itself; its command line does not contain the launcher path).
+# Claude instance itself, nor a pager or editor viewing the script).
 kill_watchdogs_for() {
   local script="$1/Contents/MacOS/launcher" pids=""
-  pids=$(ps -axo pid=,command= | MS="$script" awk 'BEGIN { s = ENVIRON["MS"] } index($0, s) { print $1 }') || true
+  pids=$(watchdog_pids_of "$script") || true
   if [ -n "$pids" ]; then
     echo "Stopping resident watchdog for $1"
     print -r -- "$pids" | xargs kill 2>/dev/null || true
@@ -157,9 +211,108 @@ if [ "$DO_REOPEN" -eq 1 ]; then
   exit 0
 fi
 
+# ---- --launch-all mode -------------------------------------------------------
+# Launch every instance that is not running, in the order the instances TUI
+# saved (order.txt, one display name per line), then the unlisted ones in
+# codepoint order (LC_ALL=C sort, as Python's sorted() does), with a gap
+# between launches. Scans /Applications and ~/Applications unless --apps given.
+# An instance whose watchdog waits for a Claude update to install is skipped:
+# the watchdog reopens it once the update lands, and launching it now would
+# reopen it on the old version and keep blocking the install.
+# A launcher that fails to open is reported and the run goes on; the exit
+# status is then non-zero.
+if [ "$DO_LAUNCH_ALL" -eq 1 ]; then
+  LAUNCH_GAP=3
+  ORDER_FILE="${CLAUDE_INSTANCES_CONFIG_DIR:-$HOME/.config/claude-instances}/order.txt"
+  WATCHDOG_LOG_DIR="$HOME/Library/Logs/claude-instances"
+  # True when $1's watchdog is alive (its lock names a zsh process running
+  # launcher app $2's script; see is_watchdog_cmd) and its log says it waits for an update
+  # install: the last of the last 200 lines, heartbeats and launcher notes
+  # aside, is the "update pending ... but not installed" line, or the default
+  # watchdog's grace line while it waits for ShipIt's relaunch after an
+  # install. Same rule as the instances TUI (processes.log_says_update_wait).
+  waiting_for_update() {
+    local name="$1" script="$2/Contents/MacOS/launcher" pid="" cmd=""
+    pid=$(readlink "$WATCHDOG_LOG_DIR/$name.lock" 2>/dev/null) || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+    is_watchdog_cmd "$cmd" "$script" || return 1
+    tail -n 200 "$WATCHDOG_LOG_DIR/$name.log" 2>/dev/null \
+      | grep -v -e 'still waiting for update install' -e 'launcher opened while instance is down' \
+          -e 'launcher opened while waiting for the ShipIt relaunch' \
+      | tail -n 1 \
+      | grep -q -e 'update pending (.*but not installed' -e 'for ShipIt to relaunch Claude before launching'
+  }
+  if [ "$APPS_GIVEN" -eq 1 ]; then
+    scan_dirs=("$APPS_DIR")
+  else
+    scan_dirs=("/Applications" "$HOME/Applications")
+  fi
+  typeset -A APP_OF SEEN
+  for dir in "${scan_dirs[@]}"; do
+    for plist in "$dir"/*.app/Contents/Info.plist(N); do
+      [ -f "$plist" ] || continue
+      id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null || true)
+      case "$id" in
+        local.launcher.*)
+          name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$plist" 2>/dev/null || true)
+          if [ -n "$name" ] && [ -z "${APP_OF[$name]}" ]; then
+            APP_OF[$name]="${plist%/Contents/Info.plist}"
+          fi ;;
+      esac
+    done
+  done
+  ordered=()
+  if [ -f "$ORDER_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ] && [ -n "${APP_OF[$line]}" ] && [ -z "${SEEN[$line]}" ]; then
+        ordered+=("$line"); SEEN[$line]=1
+      fi
+    done < "$ORDER_FILE"
+  fi
+  for name in "${(@f)$(for n in "${(@k)APP_OF}"; do [ -n "${SEEN[$n]}" ] || print -r -- "$n"; done | LC_ALL=C sort)}"; do
+    [ -n "$name" ] && ordered+=("$name")
+  done
+  echo "Launching Claude instances:"
+  launched=0
+  failed=0
+  for name in "${ordered[@]}"; do
+    app="${APP_OF[$name]}"
+    datadir=$(launcher_data_dir "$app")
+    capp=$(launcher_claude_app "$app")
+    [ -n "$capp" ] || capp="$CLAUDE_APP"
+    if [ -z "$datadir" ]; then
+      echo "   • $name: could not determine data dir; skipping"
+      continue
+    fi
+    if instance_running_for "$capp" "$datadir"; then
+      echo "   • $name: already running"
+      continue
+    fi
+    if waiting_for_update "$name" "$app"; then
+      echo "   • $name: waiting for update; skipped"
+      continue
+    fi
+    if [ "$launched" -gt 0 ]; then sleep "$LAUNCH_GAP"; fi
+    echo "   • $name: launching"
+    # One failed open must not end the run (set -e): report it and go on.
+    if open -n "$app"; then
+      launched=$((launched + 1))
+    else
+      echo "   • $name: open failed"
+      failed=$((failed + 1))
+    fi
+  done
+  if [ "${#ordered[@]}" -eq 0 ]; then
+    echo "   (no launchers found)"
+  fi
+  [ "$failed" -eq 0 ] || exit 1
+  exit 0
+fi
+
 if [ -z "$DISPLAY_NAME" ]; then
   echo "Usage: new-claude \"Claude Name\" [--dir DataFolderName] [--apps /install/path]" >&2
-  echo "       new-claude --list | --reopen-all" >&2
+  echo "       new-claude --list | --reopen-all | --launch-all [--apps /install/path]" >&2
   exit 1
 fi
 
@@ -226,6 +379,8 @@ cat > "$APP_PATH/Contents/MacOS/launcher" <<HDR
 # the update installs); stands down when you quit it (no update involved).
 CLAUDE_APP="$CLAUDE_APP"
 DATA_DIR="$DATA_DIR"
+DEFAULT_DATA_DIR="$DEFAULT_DATA_DIR"
+LAUNCHER_BODY=$LAUNCHER_BODY
 INSTANCE_NAME="$DISPLAY_NAME"
 HDR
 
@@ -254,6 +409,20 @@ STAMP="$LOG_DIR/$INSTANCE_NAME.stamp"   # mtime = when we last launched/adopted
 REOPEN_REQUESTED=0
 inst_pid=""
 started_at=$(date +%s)
+# This script's path as run (in a function, $0 is the function's name).
+SELF="$0"
+# 1 when DATA_DIR is (or resolves to) Claude's default data folder. A plain Claude
+# (no --user-data-dir, as ShipIt relaunches it after an update) runs on that
+# folder, so this watchdog adopts it as its instance; other watchdogs never
+# touch a plain Claude.
+IS_DEFAULT=0
+if [ -n "$DEFAULT_DATA_DIR" ] && { [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] ||
+     [ "${DATA_DIR:A}" = "${DEFAULT_DATA_DIR:A}" ]; }; then
+  IS_DEFAULT=1
+fi
+adopted_plain=""    # the plain Claude pid whose adoption was last logged
+WATCHING=0          # 1 once this process holds the lock
+SHIPIT_GRACE=0      # 1 while waiting for ShipIt's plain relaunch (see await_plain_relaunch)
 
 mkdir -p "$LOG_DIR"
 
@@ -275,24 +444,45 @@ claude_binary() {
 }
 
 # Exact match on the main binary AND our exact --user-data-dir (boundary-checked
-# so ".../Claude-V1" never matches ".../Claude-V10"). Search strings go through
-# the environment, NOT awk -v: values on awk's own command line can match awk's
-# own ps entry (racy self-match).
+# so ".../Claude-V1" never matches ".../Claude-V10"). When DATA_DIR is the
+# default data folder, a plain main process (the binary alone or followed by
+# flags only, no --user-data-dir= and no --type=) is this instance too
+# (on that branch only, the binary must be the program being run, as in
+# instance_running_for and the instances TUI's main_processes).
+# Prints "<pid> dir" or "<pid> plain".
+# Search strings go through the environment, NOT awk -v: values on awk's own
+# command line can match awk's own ps entry (racy self-match).
 instance_pid() {
-  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" awk '
-    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"] }
-    index($0, b) && (i = index($0, d)) {
-      r = substr($0, i + length(d), 1)
-      if (r == "" || r == " ") { print $1; f = 1; exit }
+  ps -axo pid=,command= | MB="$(claude_binary)" MD="--user-data-dir=$DATA_DIR" MDEF="$IS_DEFAULT" awk '
+    BEGIN { b = ENVIRON["MB"]; d = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
+    (j = index($0, b)) {
+      if (i = index($0, d)) {
+        r = substr($0, i + length(d), 1)
+        if (r == "" || r == " ") { print $1 " dir"; f = 1; exit }
+      } else if (isdef == "1" && !index($0, "--user-data-dir=") && !index($0, "--type=")) {
+        c = $0; sub(/^ *[0-9]+ +/, "", c)
+        if (index(c, b) != 1) {
+          sp = index(c, " "); w = substr(c, 1, sp - 1); sub(/.*\//, "", w)
+          if (sp && (w == "zsh" || w == "sh" || w == "bash")) c = substr(c, sp + 1)
+        }
+        a = substr(c, length(b) + 1, 2)
+        if (index(c, b) == 1 && (a == "" || a == " -")) { print $1 " plain"; f = 1; exit }
+      }
     }
     END { exit f ? 0 : 1 }'
 }
 
-# Also records the pid so exit diagnostics can name it.
+# Also records the pid so exit diagnostics can name it. Once this process is the
+# watchdog, a plain Claude found here is adopted and monitored like our own
+# launch; each new one is logged once.
 instance_running() {
   local p
   p=$(instance_pid) || return 1
-  inst_pid="$p"
+  inst_pid="${p%% *}"
+  if [ "${p#* }" = "plain" ] && [ "$WATCHING" -eq 1 ] && [ "$inst_pid" != "$adopted_plain" ]; then
+    adopted_plain="$inst_pid"
+    log "adopted plain Claude (pid $inst_pid) on the default profile"
+  fi
 }
 
 # Mark the start of a new instance lifetime (for crash-report lookup + uptime).
@@ -354,12 +544,14 @@ update_pending() {
 
 # ---- diagnostics ---------------------------------------------------------------
 # Data-dir names of OTHER running instances of this Claude bundle ("default" =
-# no --user-data-dir). These are what hold up a pending install.
+# no --user-data-dir). These are what hold up a pending install. For the
+# default-folder watchdog a plain Claude is its own instance, not another.
 other_instances() {
-  ps -axo command= | MB="$(claude_binary)" MD="$DATA_DIR" awk '
-    BEGIN { b = ENVIRON["MB"]; me = ENVIRON["MD"] }
+  ps -axo command= | MB="$(claude_binary)" MD="$DATA_DIR" MDEF="$IS_DEFAULT" awk '
+    BEGIN { b = ENVIRON["MB"]; me = ENVIRON["MD"]; isdef = ENVIRON["MDEF"] }
     index($0, b) == 1 || index($0, " " b) {
       d = "default"
+      if (!index($0, "--user-data-dir=") && isdef == "1") next
       if (i = index($0, "--user-data-dir=")) {
         d = substr($0, i + 16); j = index(d, " --"); if (j) d = substr(d, 1, j - 1)
         if (d == me) next
@@ -404,11 +596,55 @@ log_exit_context() {
 launch_instance() {
   last_ver=$(bundle_version)
   REOPEN_REQUESTED=0
+  # Something may have started the instance meanwhile (for the default folder,
+  # ShipIt's plain relaunch): adopt it rather than start a second process on
+  # the same profile.
+  if instance_running; then
+    mark_started
+    log "instance already running (pid $inst_pid, $last_ver); not launching another"
+    return 0
+  fi
   log "launching ($last_ver) with --user-data-dir=$DATA_DIR"
   open -n -a "$CLAUDE_APP" --args --user-data-dir="$DATA_DIR" 2>/dev/null || true
   mark_started
   sleep "$SETTLE"
   instance_running && log "instance up (pid $inst_pid)"
+}
+
+# After an update installs, ShipIt relaunches a plain Claude (no
+# --user-data-dir), which runs on the default folder. The default-folder
+# watchdog gives it up to GRACE seconds to appear before launching its own, so
+# the profile never gets two processes. Succeeds when an instance is running.
+# The wait runs its full GRACE even when the launcher is opened meanwhile (TUI l
+# or a, the Dock app, a click): the USR1 trap logs and ignores it while
+# SHIPIT_GRACE is set. The launch-alls skip a row whose log ends with this line.
+await_plain_relaunch() {
+  [ "$IS_DEFAULT" -eq 1 ] || return 1
+  local start="" waited=0
+  log "update installed on the default profile; waiting ${GRACE}s for ShipIt to relaunch Claude before launching"
+  start=$(date +%s)
+  SHIPIT_GRACE=1
+  while ! instance_running; do
+    waited=$(( $(date +%s) - start ))
+    if [ "$waited" -ge "$GRACE" ]; then
+      SHIPIT_GRACE=0
+      return 1
+    fi
+    nap 1
+  done
+  SHIPIT_GRACE=0
+  return 0
+}
+
+# Reopen after an installed update: adopt ShipIt's plain relaunch when it comes
+# (default folder only), else launch.
+reopen_after_update() {
+  if await_plain_relaunch; then
+    last_ver=$(bundle_version)
+    mark_started
+    return 0
+  fi
+  launch_and_verify
 }
 
 launch_and_verify() {
@@ -423,10 +659,50 @@ launch_and_verify() {
   instance_running
 }
 
+# Exit when the lock no longer names this watchdog: another watchdog took it over
+# (two launchers racing a stale lock), so that one owns the instance. The
+# instance itself is left alone.
+exit_unless_lock_is_ours() {
+  [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && return 0
+  log "lock no longer names this watchdog (pid $$); leaving the instance to its owner and exiting"
+  WATCHING=0
+  exit 0
+}
+
 # ---- one watchdog per instance (atomic symlink lock, stale-safe) --------------
+# True when command line $1 is zsh running launcher script $2: the first word is
+# a zsh interpreter and the rest is the whole script path, alone or followed by a
+# space (same rule as new-claude's is_watchdog_cmd and the instances TUI).
+is_watchdog_cmd() {
+  local cmd="$1" script="$2" interp="" rest=""
+  cmd="${cmd#"${cmd%%[! ]*}"}"
+  case "$cmd" in *" "*) ;; *) return 1 ;; esac
+  interp="${cmd%% *}"; rest="${cmd#* }"
+  [ "${interp:t}" = "zsh" ] || return 1
+  [ "$rest" = "$script" ] || [ "${rest[1,$(( ${#script} + 1 ))]}" = "$script " ]
+}
+
+# True when pid $1 is a live watchdog for THIS launcher (zsh running this script).
+# A lock left by a watchdog killed without its EXIT trap can name a pid that an
+# unrelated process holds now; that process must never be signalled.
+is_our_watchdog() {
+  local pid="$1" cmd=""
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+  is_watchdog_cmd "$cmd" "$SELF" || is_watchdog_cmd "$cmd" "${SELF:A}"
+}
+
+# Traps go in before the lock is taken: a launcher opened during the stale-lock
+# takeover's settle sends this process USR1 (it already looks like the owner),
+# and zsh's default action for USR1 would kill it. Only a process that became
+# the watchdog logs its exit; the lock is removed on exit only while it names us.
+trap 'if [ "$WATCHING" -eq 1 ]; then log "watchdog (pid $$) exiting"; fi; [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"' EXIT
+trap 'if [ "$WATCHING" -eq 1 ]; then log "watchdog stopped by signal"; fi; exit 0' INT TERM
+trap 'if [ "$SHIPIT_GRACE" -eq 1 ]; then log "launcher opened while waiting for the ShipIt relaunch; ignored"; else REOPEN_REQUESTED=1; log "reopen requested by launcher"; fi' USR1
+
 if ! ln -s "$$" "$LOCK" 2>/dev/null; then
   oldpid=$(readlink "$LOCK" 2>/dev/null || true)
-  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
+  if is_our_watchdog "$oldpid"; then
     # A live watchdog already owns this instance. If the instance is down (the
     # owner is in its grace or update wait), ask the owner to reopen it now;
     # the owner does the launch so there is never a second launcher racing it.
@@ -438,12 +714,22 @@ if ! ln -s "$$" "$LOCK" 2>/dev/null; then
     fi
     exit 0
   fi
-  rm -f "$LOCK"
-  ln -s "$$" "$LOCK" 2>/dev/null || exit 0
+  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
+    log "stale lock names pid $oldpid, which is not this launcher's watchdog; taking it over"
+  fi
+  # Take the stale lock over by an atomic rename (never rm then ln, which lets a
+  # second launcher delete our fresh lock). Two launchers taking over at once
+  # both rename; after a settle only the last one's pid is in the lock, and the
+  # other exits.
+  ln -s "$$" "$LOCK.$$" 2>/dev/null || exit 0
+  if ! mv -f -h "$LOCK.$$" "$LOCK" 2>/dev/null; then
+    rm -f "$LOCK.$$"
+    exit 0
+  fi
+  sleep 1
+  [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ] || exit 0
 fi
-trap 'log "watchdog (pid $$) exiting"; rm -f "$LOCK"' EXIT
-trap 'log "watchdog stopped by signal"; exit 0' INT TERM
-trap 'REOPEN_REQUESTED=1; log "reopen requested by launcher"' USR1
+WATCHING=1
 
 log "watchdog started (pid $$; poll=${POLL}s grace=${GRACE}s; shipit=$SHIPIT_DIR)"
 
@@ -468,6 +754,7 @@ wait_for_update_install() {
   local waited=0 since_beat=0 cur="" upd=""
   while :; do
     nap "$POLL"
+    exit_unless_lock_is_ours
     waited=$((waited + POLL)); since_beat=$((since_beat + POLL))
     if instance_running; then
       last_ver=$(bundle_version)
@@ -479,13 +766,21 @@ wait_for_update_install() {
     if [ "$cur" != "$last_ver" ]; then
       log "update installed ($last_ver -> $cur) after $(fmt_dur $waited); reopening instance"
       relaunched_for="$cur"
-      launch_and_verify; return
+      reopen_after_update; return
     fi
     if [ "$REOPEN_REQUESTED" -eq 1 ]; then
       log "reopening on $cur at launcher request (the update will install after this instance quits again)"
       launch_and_verify; return
     fi
     if ! upd=$(update_pending); then
+      # ShipIt swaps the bundle and then clears its staging; re-read the version
+      # so an install that landed between the two checks counts as installed.
+      cur=$(bundle_version)
+      if [ "$cur" != "$last_ver" ]; then
+        log "update installed ($last_ver -> $cur) after $(fmt_dur $waited); reopening instance"
+        relaunched_for="$cur"
+        reopen_after_update; return
+      fi
       log "pending update went away without installing (still $cur) after $(fmt_dur $waited); reopening instance"
       launch_and_verify; return
     fi
@@ -510,6 +805,7 @@ relaunched_for=""
 staged_seen=""
 while :; do
   nap "$POLL"
+  exit_unless_lock_is_ours
   if instance_running; then
     staged=$(staged_update_version) || staged=""
     if [ -n "$staged" ] && [ "$staged" != "$staged_seen" ]; then
@@ -531,7 +827,7 @@ while :; do
   if [ "$cur" != "$last_ver" ] && [ "$cur" != "$relaunched_for" ]; then
     log "update detected ($last_ver -> $cur); reopening instance"
     relaunched_for="$cur"
-    if ! launch_and_verify; then
+    if ! reopen_after_update; then
       log "reopen after update failed; exiting"
       exit 1
     fi
@@ -539,6 +835,16 @@ while :; do
     log "update pending ($upd) but not installed: Claude quit this instance to install it. ShipIt waits until every instance has quit; still running: $(other_instances)"
     if ! wait_for_update_install; then
       log "reopen after update wait failed; exiting"
+      exit 1
+    fi
+  elif cur=$(bundle_version); [ "$cur" != "$last_ver" ] && [ "$cur" != "$relaunched_for" ]; then
+    # ShipIt swaps the bundle and then clears its staging: an install that
+    # landed between the version and staging checks above is an update, not a
+    # user quit.
+    log "update detected ($last_ver -> $cur) as its staging cleared; reopening instance"
+    relaunched_for="$cur"
+    if ! reopen_after_update; then
+      log "reopen after update failed; exiting"
       exit 1
     fi
   elif [ "$REOPEN_REQUESTED" -eq 1 ]; then
@@ -566,8 +872,10 @@ fi
 # Ad-hoc sign the LAUNCHER (a brand-new app we made) — never Claude's bundle.
 codesign --force --sign - "$APP_PATH" >/dev/null 2>&1 || true
 
-# Refresh Launch Services so the name/icon register.
-LSR="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+# Refresh Launch Services so the name/icon register. CLAUDE_LAUNCHER_LSREGISTER
+# is a test hook: tests point it at a stub so a temp launcher never gets
+# registered with the real LaunchServices database.
+LSR="${CLAUDE_LAUNCHER_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}"
 "$LSR" -f "$APP_PATH" >/dev/null 2>&1 || true
 
 echo "Done."
